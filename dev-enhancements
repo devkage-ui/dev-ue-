@@ -638,6 +638,33 @@ local function runApplication()
                     -- registry; SaveManager may have captured older Options/Toggles tables.
                     control.configControls = control.configControls or {}
                     control.configControls[idx] = entry
+
+                    -- Auto-load can run before this asynchronous addon installer has
+                    -- created its controls. Apply any deferred DE_* value now that
+                    -- the live control exists, so startup auto-load matches manual load.
+                    local pending = rawget(sharedEnv, '__DE_PENDING_CONFIG_OBJECTS')
+                    local pendingObject = type(pending) == 'table' and pending[idx] or nil
+                    if type(pendingObject) == 'table' then
+                        task.defer(function()
+                            if control.stopped then return end
+                            local applied = pcall(function()
+                                if pendingObject.type == 'ColorPicker' and type(resolved.SetValueRGB) == 'function' then
+                                    resolved:SetValueRGB(Color3.fromHex(pendingObject.value), pendingObject.transparency)
+                                elseif pendingObject.type == 'KeyPicker' and type(resolved.SetValue) == 'function' then
+                                    resolved:SetValue({ pendingObject.key, pendingObject.mode })
+                                elseif pendingObject.type == 'Input' and type(resolved.SetValue) == 'function' then
+                                    resolved:SetValue(pendingObject.text)
+                                elseif type(resolved.SetValue) == 'function' then
+                                    resolved:SetValue(pendingObject.value)
+                                else
+                                    error('Control does not support config values')
+                                end
+                            end)
+                            if applied and type(pending) == 'table' and pending[idx] == pendingObject then
+                                pending[idx] = nil
+                            end
+                        end)
+                    end
                     return resolved
                 end
 
@@ -657,6 +684,16 @@ local function runApplication()
                 local function addDropdown(box, idx, info)
                     local returned = box:AddDropdown(idx, info)
                     return fetchControl('Options', idx, returned, 'Dropdown')
+                end
+
+                local function addInput(box, idx, info)
+                    local returned = box:AddInput(idx, info)
+                    return fetchControl('Options', idx, returned, 'Input')
+                end
+
+                local function addColorPicker(parent, idx, info)
+                    local returned = parent:AddColorPicker(idx, info)
+                    return fetchControl('Options', idx, returned, 'ColorPicker')
                 end
 
                 local function addDivider(box)
@@ -698,6 +735,82 @@ local function runApplication()
                             entry.frame.LayoutOrder = position * 10
                         end
                         boxFrame.LayoutOrder = 0
+                    end)
+                end
+
+                -- Positions a groupbox directly above a target groupbox in the tab
+                local function placeGroupboxAboveTarget(tab, groupbox, targetNeedle)
+                    pcall(function()
+                        local sides = tab:GetSides()
+                        local targetFrame = nil
+                        local targetColumn = nil
+
+                        for _, col in pairs({ sides.Left, sides.Right }) do
+                            if typeof(col) == 'Instance' then
+                                for _, child in ipairs(col:GetChildren()) do
+                                    if child:IsA('GuiObject') then
+                                        for _, desc in ipairs(child:GetDescendants()) do
+                                            if (desc:IsA('TextLabel') or desc:IsA('TextButton')) and string.find(string.lower(desc.Text or ''), targetNeedle, 1, true) then
+                                                targetFrame = child
+                                                targetColumn = col
+                                                break
+                                            end
+                                        end
+                                        if targetFrame then break end
+                                    end
+                                end
+                            end
+                            if targetFrame then break end
+                        end
+
+                        local boxFrame = groupbox.Container
+                        while boxFrame and boxFrame.Parent and boxFrame.Parent ~= targetColumn and boxFrame.Parent ~= sides.Left and boxFrame.Parent ~= sides.Right do
+                            boxFrame = boxFrame.Parent
+                        end
+                        if not boxFrame then return end
+
+                        local targetCol = targetColumn or sides.Left
+                        if boxFrame.Parent ~= targetCol then
+                            boxFrame.Parent = targetCol
+                        end
+
+                        local layout = targetCol:FindFirstChildOfClass('UIListLayout')
+                        if layout then
+                            layout.SortOrder = Enum.SortOrder.LayoutOrder
+                        end
+
+                        local siblings = {}
+                        for childIndex, child in ipairs(targetCol:GetChildren()) do
+                            if child:IsA('GuiObject') and child ~= boxFrame then
+                                siblings[#siblings + 1] = {
+                                    frame = child,
+                                    order = child.LayoutOrder,
+                                    index = childIndex,
+                                    isTarget = (child == targetFrame),
+                                }
+                            end
+                        end
+
+                        table.sort(siblings, function(left, right)
+                            if left.order ~= right.order then
+                                return left.order < right.order
+                            end
+                            return left.index < right.index
+                        end)
+
+                        local order = 10
+                        for _, entry in ipairs(siblings) do
+                            if entry.isTarget then
+                                boxFrame.LayoutOrder = order
+                                order = order + 10
+                            end
+                            entry.frame.LayoutOrder = order
+                            order = order + 10
+                        end
+
+                        if not targetFrame then
+                            boxFrame.LayoutOrder = 0
+                        end
                     end)
                 end
 
@@ -1061,6 +1174,284 @@ local function runApplication()
                 end)
 
                 ------------------------------------------------------------------
+                -- 3b) Aura Features (Using the script's exact native ESP effects engine)
+                ------------------------------------------------------------------
+                local ALL_AURA_STYLES = {
+                    'Angel',
+                    'Heavenly',
+                    'Celestial',
+                    'Genesis',
+                    'Tornado',
+                    'Flame',
+                    'Aurora',
+                    'Blackhole',
+                    'Bubble',
+                    'Glowing',
+                    'Hearts',
+                    'Mist',
+                    'Moon',
+                }
+
+                local auraBox = characterTab:AddLeftGroupbox('Aura Effects')
+
+                -- Self Aura Controls
+                local selfAuraToggle = addToggle(auraBox, 'DE_SelfAura', {
+                    Text = 'Self Aura',
+                    Default = false,
+                    Tooltip = 'Applies the exact native ESP aura effect to your character.',
+                })
+                local selfAuraColor = addColorPicker(selfAuraToggle, 'DE_SelfAuraColor', {
+                    Default = Color3.fromRGB(255, 252, 255),
+                    Title = 'Self Aura Color',
+                })
+
+                local selfAuraDep = auraBox:AddDependencyBox()
+                local selfAuraStyle = addDropdown(selfAuraDep, 'DE_SelfAuraStyle', {
+                    Text = 'Aura Style',
+                    Values = ALL_AURA_STYLES,
+                    Default = 1,
+                    Multi = false,
+                    Tooltip = 'Native aura style selection.',
+                })
+                local selfAuraSize = addSlider(selfAuraDep, 'DE_SelfAuraSize', {
+                    Text = 'Aura Size', Default = 5, Min = 1, Max = 25,
+                    Tooltip = 'Scales the native aura particle size.',
+                })
+                local selfAuraSpeed = addSlider(selfAuraDep, 'DE_SelfAuraSpeed', {
+                    Text = 'Aura Speed', Default = 10, Min = 1, Max = 50,
+                    Tooltip = 'Scales the native aura particle speed and rate.',
+                })
+                local selfAuraRainbow = addToggle(selfAuraDep, 'DE_SelfAuraRainbow', {
+                    Text = 'Rainbow Aura', Default = false,
+                    Tooltip = 'Cycles your aura through the full rainbow spectrum.',
+                })
+                selfAuraDep:SetupDependencies({ { selfAuraToggle, true } })
+
+                addDivider(auraBox)
+
+                -- Enemy Aura Controls
+                local enemyAuraToggle = addToggle(auraBox, 'DE_EnemyAura', {
+                    Text = 'Enemy Aura',
+                    Default = false,
+                    Tooltip = 'Applies the exact native ESP aura effect to all enemy players.',
+                })
+                local enemyAuraColor = addColorPicker(enemyAuraToggle, 'DE_EnemyAuraColor', {
+                    Default = Color3.fromRGB(255, 60, 60),
+                    Title = 'Enemy Aura Color',
+                })
+
+                local enemyAuraDep = auraBox:AddDependencyBox()
+                local enemyAuraStyle = addDropdown(enemyAuraDep, 'DE_EnemyAuraStyle', {
+                    Text = 'Enemy Aura Style',
+                    Values = ALL_AURA_STYLES,
+                    Default = 1,
+                    Multi = false,
+                    Tooltip = 'Native aura style selection for enemies.',
+                })
+                local enemyAuraSize = addSlider(enemyAuraDep, 'DE_EnemyAuraSize', {
+                    Text = 'Enemy Aura Size', Default = 5, Min = 1, Max = 25,
+                    Tooltip = 'Scales enemy aura particle size.',
+                })
+                local enemyAuraSpeed = addSlider(enemyAuraDep, 'DE_EnemyAuraSpeed', {
+                    Text = 'Enemy Aura Speed', Default = 10, Min = 1, Max = 50,
+                    Tooltip = 'Scales enemy aura particle speed and rate.',
+                })
+                local enemyAuraRainbow = addToggle(enemyAuraDep, 'DE_EnemyAuraRainbow', {
+                    Text = 'Rainbow Enemy Aura', Default = false,
+                    Tooltip = 'Cycles enemy auras through the rainbow spectrum.',
+                })
+                enemyAuraDep:SetupDependencies({ { enemyAuraToggle, true } })
+
+                -- Position cleanly above thirdperson in the Character tab
+                placeGroupboxAboveTarget(characterTab, auraBox, 'third person')
+
+                -- Connection to the script's exact ESP effects engine (value141)
+                local selfEffectsInstance = nil
+                local lastSelfStyle = nil
+                local isSelfAuraActive = false
+
+                local function getEffectsFactory()
+                    return rawget(shared, '__UE_EffectsFactory') or (type(getgenv) == 'function' and getgenv().__UE_EffectsFactory)
+                end
+
+                local function getEffectsEvents()
+                    return rawget(shared, '__UE_EffectsEvents') or (type(getgenv) == 'function' and getgenv().__UE_EffectsEvents)
+                end
+
+                local function ensureSelfEffects()
+                    if not selfEffectsInstance then
+                        local factory = getEffectsFactory()
+                        if type(factory) == 'function' then
+                            selfEffectsInstance = factory('esp')
+                        end
+                    end
+                    return selfEffectsInstance
+                end
+
+                local function applySelfAura(char, style)
+                    local effects = ensureSelfEffects()
+                    if not effects or not char or not char.Parent then return end
+                    local styleKey = tostring(style or 'tornado'):lower()
+                    local styleMap = { [styleKey] = true, [tostring(style)] = true }
+                    effects:create(char, styleMap, 'aura')
+                    effects:update('aura')
+                    isSelfAuraActive = true
+                    lastSelfStyle = styleKey
+                end
+
+                local function removeSelfAura()
+                    if selfEffectsInstance and isSelfAuraActive then
+                        pcall(function()
+                            selfEffectsInstance:destroy('aura')
+                        end)
+                        isSelfAuraActive = false
+                    end
+                end
+
+                local function syncEnemyAuraSettings()
+                    local isEnabled = enemyAuraToggle.Value
+                    local style = tostring(enemyAuraStyle.Value or 'tornado'):lower()
+                    local events = getEffectsEvents()
+
+                    if Options and Options.esp_effects_aura_value and type(Options.esp_effects_aura_value.SetValue) == 'function' then
+                        Options.esp_effects_aura_value:SetValue({ [style] = true, [tostring(enemyAuraStyle.Value)] = true })
+                    end
+
+                    if Toggles and Toggles.esp_effects_aura and type(Toggles.esp_effects_aura.SetValue) == 'function' then
+                        Toggles.esp_effects_aura:SetValue(isEnabled)
+                    end
+
+                    if events and events.events and events.events.esp_effects_changed then
+                        events.events.esp_effects_changed:Fire()
+                    end
+                end
+
+                selfAuraToggle:OnChanged(function()
+                    if selfAuraToggle.Value then
+                        applySelfAura(localPlayer.Character, selfAuraStyle.Value)
+                    else
+                        removeSelfAura()
+                    end
+                end)
+
+                selfAuraStyle:OnChanged(function()
+                    if selfAuraToggle.Value then
+                        removeSelfAura()
+                        applySelfAura(localPlayer.Character, selfAuraStyle.Value)
+                    end
+                end)
+
+                enemyAuraToggle:OnChanged(syncEnemyAuraSettings)
+                enemyAuraStyle:OnChanged(syncEnemyAuraSettings)
+
+                -- Modify native particle size, speed, and rainbow in real time
+                local function scaleParticleEmitters(parentPart, sizeScale, speedScale, overrideColor)
+                    if not parentPart then return end
+                    for _, desc in ipairs(parentPart:GetDescendants()) do
+                        if desc:IsA('ParticleEmitter') and (desc.Name == 'Aura' or desc.Name == 'particle' or desc.Name == 'Particle' or string.find(desc.Name, 'Aura') or desc.Parent:IsA('Attachment')) then
+                            if not desc:GetAttribute('__NativeSize') then
+                                desc:SetAttribute('__NativeSize', true)
+                                desc:SetAttribute('__BaseSpeedMin', desc.Speed.Min)
+                                desc:SetAttribute('__BaseSpeedMax', desc.Speed.Max)
+                                desc:SetAttribute('__BaseRate', desc.Rate)
+                            end
+
+                            -- Scale size
+                            if sizeScale and sizeScale ~= 1 then
+                                local sz = 1.2 * sizeScale
+                                desc.Size = NumberSequence.new({
+                                    NumberSequenceKeypoint.new(0, sz * 0.4),
+                                    NumberSequenceKeypoint.new(0.5, sz),
+                                    NumberSequenceKeypoint.new(1, 0),
+                                })
+                            end
+
+                            -- Scale speed and rate
+                            if speedScale and speedScale ~= 1 then
+                                local bMin = desc:GetAttribute('__BaseSpeedMin') or 0.8
+                                local bMax = desc:GetAttribute('__BaseSpeedMax') or 2.8
+                                local bRate = desc:GetAttribute('__BaseRate') or 22
+                                desc.Speed = NumberRange.new(bMin * speedScale, bMax * speedScale)
+                                desc.Rate = math.max(1, math.floor(bRate * math.clamp(speedScale, 0.4, 3.0)))
+                            end
+
+                            -- Apply color override / rainbow
+                            if overrideColor then
+                                desc.Color = ColorSequence.new(overrideColor)
+                            end
+                        end
+                    end
+                end
+
+                local selfHue = 0
+                local enemyHue = 0
+
+                local auraHeartbeatConn = runService.Heartbeat:Connect(function(dt)
+                    -- 1. Self Aura Scaling & Rainbow
+                    if selfAuraToggle.Value then
+                        local char = localPlayer.Character
+                        if char then
+                            if not isSelfAuraActive or lastSelfStyle ~= tostring(selfAuraStyle.Value):lower() then
+                                applySelfAura(char, selfAuraStyle.Value)
+                            end
+                            local szScale = (selfAuraSize.Value or 5) / 5
+                            local spdScale = (selfAuraSpeed.Value or 10) / 10
+                            local col = selfAuraColor.Value or Color3.fromRGB(255, 252, 255)
+                            if selfAuraRainbow.Value then
+                                selfHue = (selfHue + dt * (spdScale * 0.25)) % 1
+                                col = Color3.fromHSV(selfHue, 1, 1)
+                            end
+                            scaleParticleEmitters(char, szScale, spdScale, col)
+                        end
+                    end
+
+                    -- 2. Enemy Aura Scaling & Rainbow
+                    if enemyAuraToggle.Value then
+                        local szScale = (enemyAuraSize.Value or 5) / 5
+                        local spdScale = (enemyAuraSpeed.Value or 10) / 10
+                        local col = enemyAuraColor.Value or Color3.fromRGB(255, 60, 60)
+                        if enemyAuraRainbow.Value then
+                            enemyHue = (enemyHue + dt * (spdScale * 0.25)) % 1
+                            col = Color3.fromHSV(enemyHue, 1, 1)
+                            if Options and Options.esp_effects_aura_color1 and type(Options.esp_effects_aura_color1.SetValueRGB) == 'function' then
+                                Options.esp_effects_aura_color1:SetValueRGB(col)
+                            end
+                        end
+                        for _, p in ipairs(players:GetPlayers()) do
+                            if p ~= localPlayer and p.Character then
+                                scaleParticleEmitters(p.Character, szScale, spdScale, enemyAuraRainbow.Value and col or nil)
+                            end
+                        end
+                    end
+                end)
+
+                local charAddedConn = localPlayer.CharacterAdded:Connect(function(char)
+                    task.wait(0.2)
+                    if selfAuraToggle.Value then
+                        applySelfAura(char, selfAuraStyle.Value)
+                    end
+                end)
+
+                onCleanup(function()
+                    if auraHeartbeatConn then
+                        auraHeartbeatConn:Disconnect()
+                        auraHeartbeatConn = nil
+                    end
+                    if charAddedConn then
+                        charAddedConn:Disconnect()
+                        charAddedConn = nil
+                    end
+                    removeSelfAura()
+                    if Toggles and Toggles.esp_effects_aura and type(Toggles.esp_effects_aura.SetValue) == 'function' then
+                        Toggles.esp_effects_aura:SetValue(false)
+                        local events = getEffectsEvents()
+                        if events and events.events and events.events.esp_effects_changed then
+                            events.events.esp_effects_changed:Fire()
+                        end
+                    end
+                end)
+
+                ------------------------------------------------------------------
                 -- 4) Rainbow Accent + UI Glow (Settings tab)
                 ------------------------------------------------------------------
                 if settingsTab then
@@ -1329,6 +1720,56 @@ local function runApplication()
                     end
                     setRainbow(rainbowToggle.Value)
                     setGlow(glowToggle.Value)
+
+                    ------------------------------------------------------------------
+                    -- 4b) Menu Customization (UI Title & Rivals Text, Settings tab)
+                    ------------------------------------------------------------------
+                    local menuBox = settingsTab:AddLeftGroupbox('Menu Customization')
+                    local defaultBrand = brandText or 'dev-enhancements - dsc.gg/dev-enhancements'
+
+                    addInput(menuBox, 'DE_CustomTitle', {
+                        Text = 'UI Window Title',
+                        Default = defaultBrand,
+                        Placeholder = 'Enter custom window title...',
+                        Finished = false,
+                        Callback = function(newTitle)
+                            if type(newTitle) == 'string' and #newTitle > 0 then
+                                pcall(function()
+                                    if type(library.SetWindowTitle) == 'function' then
+                                        library:SetWindowTitle(newTitle)
+                                    elseif type(library.Window) == 'table' and type(library.Window.SetWindowTitle) == 'function' then
+                                        library.Window:SetWindowTitle(newTitle)
+                                    end
+                                end)
+                            end
+                        end,
+                    })
+
+                    addInput(menuBox, 'DE_CustomRivals', {
+                        Text = 'Rivals Label / Watermark',
+                        Default = 'Rivals',
+                        Placeholder = 'Enter custom text...',
+                        Finished = false,
+                        Callback = function(newText)
+                            if type(newText) == 'string' and #newText > 0 then
+                                pcall(function()
+                                    if type(library.SetWatermark) == 'function' then
+                                        library:SetWatermark(newText)
+                                    end
+                                    if screenGui then
+                                        for _, desc in ipairs(screenGui:GetDescendants()) do
+                                            if desc:IsA('TextLabel') or desc:IsA('TextButton') then
+                                                local txt = desc.Text or ''
+                                                if string.find(string.lower(txt), 'rivals', 1, true) then
+                                                    desc.Text = string.gsub(txt, '([Rr][Ii][Vv][Aa][Ll][Ss])', newText)
+                                                end
+                                            end
+                                        end
+                                    end
+                                end)
+                            end
+                        end,
+                    })
 
                     onCleanup(function()
                         rainbowEnabled = false
@@ -2942,6 +3383,20 @@ function Native.configuration(captures)
                         end
                     end)
                     return okApply
+                end
+
+                -- Preserve addon settings encountered during startup auto-load.
+                -- Their UI controls are created asynchronously, so the normal parser
+                -- would otherwise silently skip them before the controls exist.
+                local savedIndex = tostring(savedObject.idx or '')
+                if string.sub(savedIndex, 1, 3) == 'DE_' then
+                    local pending = rawget(sharedEnv, '__DE_PENDING_CONFIG_OBJECTS')
+                    if type(pending) ~= 'table' then
+                        pending = {}
+                        rawset(sharedEnv, '__DE_PENDING_CONFIG_OBJECTS', pending)
+                    end
+                    pending[savedObject.idx] = savedObject
+                    return true
                 end
 
                 local parser = self.Parser[savedObject.type]
@@ -7757,6 +8212,14 @@ function Native.recovered68_t(captures)
     local capture16 = captures[16]
     local capture06 = captures[6]
     local capture13 = captures[13]
+    pcall(function()
+        rawset(shared, '__UE_EffectsFactory', capture13)
+        rawset(shared, '__UE_EffectsEvents', capture17)
+        if type(getgenv) == 'function' then
+            getgenv().__UE_EffectsFactory = capture13
+            getgenv().__UE_EffectsEvents = capture17
+        end
+    end)
     local capture25 = captures[25]
     local capture11 = captures[11]
     local capture27 = captures[27]
@@ -93372,7 +93835,7 @@ function Backend.loadProgramData()
         [1624] = 2000,
         [1625] = 'NotificationColorsOutline',
         [1626] = '\240\230R\240>\184pcy\16\164\25JH\231\14\235b\3\b\138b\1\249\194\4\255',
-        [1627] = 'qwertyuiopasdfghjklzxcvbnm098765',
+        [1627] = 'zDKXlJlAUfIgIEiHtQjmENGbjWbUniNW',
         [1628] = 'R\249!\235*',
         [1629] = 21845944094585,
         [1630] = 'rbxassetid://6419989824',
