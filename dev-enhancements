@@ -638,33 +638,6 @@ local function runApplication()
                     -- registry; SaveManager may have captured older Options/Toggles tables.
                     control.configControls = control.configControls or {}
                     control.configControls[idx] = entry
-
-                    -- Auto-load can run before this asynchronous addon installer has
-                    -- created its controls. Apply any deferred DE_* value now that
-                    -- the live control exists, so startup auto-load matches manual load.
-                    local pending = rawget(sharedEnv, '__DE_PENDING_CONFIG_OBJECTS')
-                    local pendingObject = type(pending) == 'table' and pending[idx] or nil
-                    if type(pendingObject) == 'table' then
-                        task.defer(function()
-                            if control.stopped then return end
-                            local applied = pcall(function()
-                                if pendingObject.type == 'ColorPicker' and type(resolved.SetValueRGB) == 'function' then
-                                    resolved:SetValueRGB(Color3.fromHex(pendingObject.value), pendingObject.transparency)
-                                elseif pendingObject.type == 'KeyPicker' and type(resolved.SetValue) == 'function' then
-                                    resolved:SetValue({ pendingObject.key, pendingObject.mode })
-                                elseif pendingObject.type == 'Input' and type(resolved.SetValue) == 'function' then
-                                    resolved:SetValue(pendingObject.text)
-                                elseif type(resolved.SetValue) == 'function' then
-                                    resolved:SetValue(pendingObject.value)
-                                else
-                                    error('Control does not support config values')
-                                end
-                            end)
-                            if applied and type(pending) == 'table' and pending[idx] == pendingObject then
-                                pending[idx] = nil
-                            end
-                        end)
-                    end
                     return resolved
                 end
 
@@ -2969,20 +2942,6 @@ function Native.configuration(captures)
                         end
                     end)
                     return okApply
-                end
-
-                -- Preserve addon settings encountered during startup auto-load.
-                -- Their UI controls are created asynchronously, so the normal parser
-                -- would otherwise silently skip them before the controls exist.
-                local savedIndex = tostring(savedObject.idx or '')
-                if string.sub(savedIndex, 1, 3) == 'DE_' then
-                    local pending = rawget(sharedEnv, '__DE_PENDING_CONFIG_OBJECTS')
-                    if type(pending) ~= 'table' then
-                        pending = {}
-                        rawset(sharedEnv, '__DE_PENDING_CONFIG_OBJECTS', pending)
-                    end
-                    pending[savedObject.idx] = savedObject
-                    return true
                 end
 
                 local parser = self.Parser[savedObject.type]
@@ -93413,7 +93372,7 @@ function Backend.loadProgramData()
         [1624] = 2000,
         [1625] = 'NotificationColorsOutline',
         [1626] = '\240\230R\240>\184pcy\16\164\25JH\231\14\235b\3\b\138b\1\249\194\4\255',
-        [1627] = 'zDKXlJlAUfIgIEiHtQjmENGbjWbUniNW',
+        [1627] = 'qwertyuiopasdfghjklzxcvbnm098765',
         [1628] = 'R\249!\235*',
         [1629] = 21845944094585,
         [1630] = 'rbxassetid://6419989824',
