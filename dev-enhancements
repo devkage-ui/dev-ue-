@@ -1174,281 +1174,670 @@ local function runApplication()
                 end)
 
                 ------------------------------------------------------------------
-                -- 3b) Aura Features (Using the script's exact native ESP effects engine)
+                -- 3b) Character Aura controls - native UE ESP aura engine only.
+                -- The names are copied from Options.esp_effects_aura_value.Values;
+                -- no style names, textures, emitters, or parts are invented here.
                 ------------------------------------------------------------------
-                local ALL_AURA_STYLES = {
-                    'Angel',
-                    'Heavenly',
-                    'Celestial',
-                    'Genesis',
-                    'Tornado',
-                    'Flame',
-                    'Aurora',
-                    'Blackhole',
-                    'Bubble',
-                    'Glowing',
-                    'Hearts',
-                    'Mist',
-                    'Moon',
-                }
-
                 local auraBox = characterTab:AddLeftGroupbox('Aura Effects')
 
-                -- Self Aura Controls
+                local function nativeAuraApi()
+                    local function readGlobal(name)
+                        local value = rawget(sharedEnv, name)
+                        if type(value) ~= 'table' then
+                            value = rawget(_G, name)
+                        end
+                        if type(value) ~= 'table' then
+                            local ok, globalValue = pcall(function()
+                                return _G[name]
+                            end)
+                            if ok then value = globalValue end
+                        end
+                        return value
+                    end
+
+                    local nativeOptions = readGlobal('Options')
+                    local nativeToggles = readGlobal('Toggles')
+                    local nativeAuraDropdown = type(nativeOptions) == 'table' and nativeOptions.esp_effects_aura_value or nil
+                    local nativeAuraToggle = type(nativeToggles) == 'table' and nativeToggles.esp_effects_aura or nil
+                    local nativeValues = type(nativeAuraDropdown) == 'table' and nativeAuraDropdown.Values or nil
+
+                    if type(nativeAuraDropdown) ~= 'table'
+                        or type(nativeAuraToggle) ~= 'table'
+                        or type(nativeValues) ~= 'table'
+                        or #nativeValues == 0
+                        or type(nativeAuraDropdown.SetValue) ~= 'function'
+                        or type(nativeAuraToggle.SetValue) ~= 'function' then
+                        return nil
+                    end
+
+                    local values = {}
+                    for _, value in ipairs(nativeValues) do
+                        if type(value) == 'string' then
+                            values[#values + 1] = value
+                        end
+                    end
+                    if #values == 0 then
+                        return nil
+                    end
+
+                    local nativeShared = type(shared) == 'table' and shared or nil
+                    local factory = nativeShared and rawget(nativeShared, '__UE_EffectsFactory') or nil
+                    local events = nativeShared and rawget(nativeShared, '__UE_EffectsEvents') or nil
+                    if type(factory) ~= 'function' and type(getgenv) == 'function' then
+                        local ok, executorEnv = pcall(getgenv)
+                        if ok and type(executorEnv) == 'table' then
+                            factory = rawget(executorEnv, '__UE_EffectsFactory')
+                            events = events or rawget(executorEnv, '__UE_EffectsEvents')
+                        end
+                    end
+
+                    return {
+                        Options = nativeOptions,
+                        Toggles = nativeToggles,
+                        Dropdown = nativeAuraDropdown,
+                        Toggle = nativeAuraToggle,
+                        Values = values,
+                        Multi = nativeAuraDropdown.Multi == true,
+                        Factory = factory,
+                        Events = events,
+                    }
+                end
+
+                local nativeAura
+                local nativeAuraDeadline = os.clock() + 20
+                repeat
+                    nativeAura = nativeAuraApi()
+                    if nativeAura and type(nativeAura.Factory) == 'function' then
+                        break
+                    end
+                    task.wait(0.25)
+                until os.clock() >= nativeAuraDeadline or control.stopped
+
+                if control.stopped then
+                    return
+                end
+                if not nativeAura then
+                    error('UE native aura controls were not available; no replacement aura styles were created.', 0)
+                end
+
+                local function nativeSelectionArray(value)
+                    local selected = {}
+                    if type(value) == 'table' then
+                        for name, enabled in pairs(value) do
+                            if enabled == true and table.find(nativeAura.Values, name) then
+                                selected[#selected + 1] = name
+                            end
+                        end
+                    elseif type(value) == 'string' and table.find(nativeAura.Values, value) then
+                        selected[#selected + 1] = value
+                    end
+                    table.sort(selected)
+                    if #selected == 0 and nativeAura.Values[1] then
+                        selected[1] = nativeAura.Values[1]
+                    end
+                    return selected
+                end
+
+                local function selectionMap(controlObject)
+                    local selected = {}
+                    local value = controlObject and controlObject.Value
+                    if type(value) == 'table' then
+                        for name, enabled in pairs(value) do
+                            if enabled == true and table.find(nativeAura.Values, name) then
+                                selected[name] = true
+                            end
+                        end
+                    elseif type(value) == 'string' and table.find(nativeAura.Values, value) then
+                        selected[value] = true
+                    end
+                    if next(selected) == nil and nativeAura.Values[1] then
+                        selected[nativeAura.Values[1]] = true
+                    end
+                    return selected
+                end
+
+                local function selectionArrayMap(values)
+                    local selected = {}
+                    for _, name in ipairs(values or {}) do
+                        if table.find(nativeAura.Values, name) then
+                            selected[name] = true
+                        end
+                    end
+                    if next(selected) == nil and nativeAura.Values[1] then
+                        selected[nativeAura.Values[1]] = true
+                    end
+                    return selected
+                end
+
+                local function fireNativeAuraChanged()
+                    local events = nativeAura.Events
+                    if type(events) ~= 'table' and type(getgenv) == 'function' then
+                        local ok, executorEnv = pcall(getgenv)
+                        if ok and type(executorEnv) == 'table' then
+                            events = rawget(executorEnv, '__UE_EffectsEvents')
+                        end
+                    end
+                    local signal = type(events) == 'table'
+                        and type(events.events) == 'table'
+                        and events.events.esp_effects_changed or nil
+                    if signal and type(signal.Fire) == 'function' then
+                        pcall(function() signal:Fire() end)
+                    end
+                end
+
+                local originalEnemyAuraEnabled = nativeAura.Toggle.Value == true
+                local originalEnemyAuraSelection = nativeSelectionArray(nativeAura.Dropdown.Value)
+                local nativeDefaultSelection = nativeSelectionArray(nativeAura.Dropdown.Value)
+                local nativeDefaultValue = nativeAura.Multi and table.clone(nativeDefaultSelection) or nativeDefaultSelection[1]
+
+                local function setNativeAuraSelection(styleMap)
+                    if nativeAura.Multi then
+                        nativeAura.Dropdown:SetValue(styleMap)
+                    else
+                        local singleStyle
+                        for _, name in ipairs(nativeAura.Values) do
+                            if styleMap[name] then
+                                singleStyle = name
+                                break
+                            end
+                        end
+                        nativeAura.Dropdown:SetValue(singleStyle or nativeAura.Values[1])
+                    end
+                end
+
+                -- Self Aura uses the same factory and create/destroy contract as the
+                -- built-in ESP runtime. The toggle and style dropdown are the original
+                -- controls from the working native-aura integration; customization
+                -- settings stay inside this dependency box and appear only when enabled.
                 local selfAuraToggle = addToggle(auraBox, 'DE_SelfAura', {
                     Text = 'Self Aura',
                     Default = false,
-                    Tooltip = 'Applies the exact native ESP aura effect to your character.',
+                    Tooltip = 'Uses UE built-in aura effects on your character.',
                 })
-                local selfAuraColor = addColorPicker(selfAuraToggle, 'DE_SelfAuraColor', {
-                    Default = Color3.fromRGB(255, 252, 255),
-                    Title = 'Self Aura Color',
-                })
-
                 local selfAuraDep = auraBox:AddDependencyBox()
                 local selfAuraStyle = addDropdown(selfAuraDep, 'DE_SelfAuraStyle', {
-                    Text = 'Aura Style',
-                    Values = ALL_AURA_STYLES,
-                    Default = 1,
-                    Multi = false,
-                    Tooltip = 'Native aura style selection.',
+                    Text = 'Self Aura Style',
+                    Values = table.clone(nativeAura.Values),
+                    Default = type(nativeDefaultValue) == 'table' and table.clone(nativeDefaultValue) or nativeDefaultValue,
+                    Multi = nativeAura.Multi,
+                    Tooltip = 'Uses the same native aura styles as the ESP aura selector.',
                 })
-                local selfAuraSize = addSlider(selfAuraDep, 'DE_SelfAuraSize', {
-                    Text = 'Aura Size', Default = 5, Min = 1, Max = 25,
-                    Tooltip = 'Scales the native aura particle size.',
-                })
-                local selfAuraSpeed = addSlider(selfAuraDep, 'DE_SelfAuraSpeed', {
-                    Text = 'Aura Speed', Default = 10, Min = 1, Max = 50,
-                    Tooltip = 'Scales the native aura particle speed and rate.',
+                local selfAuraColor = addColorPicker(selfAuraDep, 'DE_SelfAuraColor', {
+                    Default = Color3.fromRGB(255, 255, 255),
+                    Title = 'Self Aura Color',
                 })
                 local selfAuraRainbow = addToggle(selfAuraDep, 'DE_SelfAuraRainbow', {
-                    Text = 'Rainbow Aura', Default = false,
-                    Tooltip = 'Cycles your aura through the full rainbow spectrum.',
+                    Text = 'Rainbow Self Aura', Default = false,
+                })
+                local selfAuraSize = addSlider(selfAuraDep, 'DE_SelfAuraSize', {
+                    Text = 'Self Aura Size', Default = 5, Min = 1, Max = 15,
+                })
+                local selfAuraOffset = addSlider(selfAuraDep, 'DE_SelfAuraOffset', {
+                    Text = 'Self Aura Up / Down', Default = 0, Min = -10, Max = 10,
+                    Suffix = ' studs',
                 })
                 selfAuraDep:SetupDependencies({ { selfAuraToggle, true } })
 
                 addDivider(auraBox)
 
-                -- Enemy Aura Controls
+                -- Enemy Aura continues to use UE's existing enemy ESP renderer,
+                -- style selector, color options, and team/ally filtering.
                 local enemyAuraToggle = addToggle(auraBox, 'DE_EnemyAura', {
                     Text = 'Enemy Aura',
-                    Default = false,
-                    Tooltip = 'Applies the exact native ESP aura effect to all enemy players.',
+                    Default = originalEnemyAuraEnabled,
+                    Tooltip = 'Uses UE built-in ESP aura effects and its existing enemy/team filtering.',
                 })
-                local enemyAuraColor = addColorPicker(enemyAuraToggle, 'DE_EnemyAuraColor', {
-                    Default = Color3.fromRGB(255, 60, 60),
-                    Title = 'Enemy Aura Color',
-                })
-
                 local enemyAuraDep = auraBox:AddDependencyBox()
                 local enemyAuraStyle = addDropdown(enemyAuraDep, 'DE_EnemyAuraStyle', {
                     Text = 'Enemy Aura Style',
-                    Values = ALL_AURA_STYLES,
-                    Default = 1,
-                    Multi = false,
-                    Tooltip = 'Native aura style selection for enemies.',
+                    Values = table.clone(nativeAura.Values),
+                    Default = type(nativeDefaultValue) == 'table' and table.clone(nativeDefaultValue) or nativeDefaultValue,
+                    Multi = nativeAura.Multi,
+                    Tooltip = 'Uses the exact style names from UE native ESP aura settings.',
                 })
-                local enemyAuraSize = addSlider(enemyAuraDep, 'DE_EnemyAuraSize', {
-                    Text = 'Enemy Aura Size', Default = 5, Min = 1, Max = 25,
-                    Tooltip = 'Scales enemy aura particle size.',
-                })
-                local enemyAuraSpeed = addSlider(enemyAuraDep, 'DE_EnemyAuraSpeed', {
-                    Text = 'Enemy Aura Speed', Default = 10, Min = 1, Max = 50,
-                    Tooltip = 'Scales enemy aura particle speed and rate.',
+                local enemyAuraColor = addColorPicker(enemyAuraDep, 'DE_EnemyAuraColor', {
+                    Default = Color3.fromRGB(255, 80, 80),
+                    Title = 'Enemy Aura Color',
                 })
                 local enemyAuraRainbow = addToggle(enemyAuraDep, 'DE_EnemyAuraRainbow', {
                     Text = 'Rainbow Enemy Aura', Default = false,
-                    Tooltip = 'Cycles enemy auras through the rainbow spectrum.',
+                })
+                local enemyAuraSize = addSlider(enemyAuraDep, 'DE_EnemyAuraSize', {
+                    Text = 'Enemy Aura Size', Default = 5, Min = 1, Max = 15,
+                })
+                local enemyAuraOffset = addSlider(enemyAuraDep, 'DE_EnemyAuraOffset', {
+                    Text = 'Enemy Aura Up / Down', Default = 0, Min = -10, Max = 10,
+                    Suffix = ' studs',
                 })
                 enemyAuraDep:SetupDependencies({ { enemyAuraToggle, true } })
 
-                -- Position cleanly above thirdperson in the Character tab
+                -- Put the group above the existing Third Person section.
                 placeGroupboxAboveTarget(characterTab, auraBox, 'third person')
 
-                -- Connection to the script's exact ESP effects engine (value141)
                 local selfEffectsInstance = nil
-                local lastSelfStyle = nil
-                local isSelfAuraActive = false
+                local selfAuraCharacter = nil
+                local selfAuraActive = false
+                local selfAuraRecords = {}
+                local enemyAuraRecords = {}
+                local enemyAuraTracked = {}
 
-                local function getEffectsFactory()
-                    return rawget(shared, '__UE_EffectsFactory') or (type(getgenv) == 'function' and getgenv().__UE_EffectsFactory)
+                local colorOptionNames = {
+                    'esp_effects_aura_color1',
+                    'esp_effects_aura_color2',
+                    'esp_effects_aura_color3',
+                }
+                local nativeColorOptions = {}
+                local originalNativeColors = {}
+                for index, name in ipairs(colorOptionNames) do
+                    local option = nativeAura.Options and nativeAura.Options[name]
+                    if type(option) == 'table' then
+                        nativeColorOptions[index] = option
+                        originalNativeColors[index] = option.Value
+                    end
                 end
 
-                local function getEffectsEvents()
-                    return rawget(shared, '__UE_EffectsEvents') or (type(getgenv) == 'function' and getgenv().__UE_EffectsEvents)
-                end
-
-                local function ensureSelfEffects()
-                    if not selfEffectsInstance then
-                        local factory = getEffectsFactory()
-                        if type(factory) == 'function' then
-                            selfEffectsInstance = factory('esp')
+                local function setNativeAuraColors(color)
+                    for _, option in ipairs(nativeColorOptions) do
+                        if option then
+                            pcall(function() option.Value = color end)
                         end
                     end
-                    return selfEffectsInstance
                 end
 
-                local function applySelfAura(char, style)
-                    local effects = ensureSelfEffects()
-                    if not effects or not char or not char.Parent then return end
-                    local styleKey = tostring(style or 'tornado'):lower()
-                    local styleMap = { [styleKey] = true, [tostring(style)] = true }
-                    effects:create(char, styleMap, 'aura')
-                    effects:update('aura')
-                    isSelfAuraActive = true
-                    lastSelfStyle = styleKey
+                local function withNativeAuraColors(color, callback)
+                    local saved = {}
+                    for index, option in ipairs(nativeColorOptions) do
+                        if option then
+                            saved[index] = option.Value
+                            pcall(function() option.Value = color end)
+                        end
+                    end
+                    local ok, result = pcall(callback)
+                    for index, option in ipairs(nativeColorOptions) do
+                        if option and saved[index] ~= nil then
+                            pcall(function() option.Value = saved[index] end)
+                        end
+                    end
+                    if not ok then
+                        control.auraError = tostring(result)
+                    end
+                    return ok, result
+                end
+
+                local function fireNativeAuraColorsChanged()
+                    local events = nativeAura.Events
+                    local signal = type(events) == 'table'
+                        and type(events.events) == 'table'
+                        and events.events.esp_effects_color_changed or nil
+                    if signal and type(signal.Fire) == 'function' then
+                        pcall(function() signal:Fire() end)
+                    end
+                end
+
+                local function snapshotCharacter(character)
+                    local snapshot = {}
+                    if character and character.Parent then
+                        for _, object in ipairs(character:GetDescendants()) do
+                            snapshot[object] = true
+                        end
+                    end
+                    return snapshot
+                end
+
+                local function isAuraVisualObject(object)
+                    return object:IsA('Attachment')
+                        or object:IsA('ParticleEmitter')
+                        or object:IsA('Beam')
+                        or object:IsA('Trail')
+                        or object:IsA('PointLight')
+                        or object:IsA('SpotLight')
+                end
+
+                local function collectCreatedAuraObjects(character, before)
+                    local records = {}
+                    if not character or not character.Parent then
+                        return records
+                    end
+                    for _, object in ipairs(character:GetDescendants()) do
+                        if not before[object] and isAuraVisualObject(object) then
+                            local record = { Instance = object }
+                            if object:IsA('Attachment') then
+                                record.Position = object.Position
+                            elseif object:IsA('ParticleEmitter') then
+                                record.Size = object.Size
+                            elseif object:IsA('Beam') then
+                                record.Width0 = object.Width0
+                                record.Width1 = object.Width1
+                            elseif object:IsA('Trail') then
+                                record.WidthScale = object.WidthScale
+                            elseif object:IsA('PointLight') or object:IsA('SpotLight') then
+                                record.Range = object.Range
+                            end
+                            records[#records + 1] = record
+                        end
+                    end
+                    return records
+                end
+
+                local function scaleSequence(sequence, scale)
+                    local keypoints = sequence.Keypoints
+                    local scaled = table.create(#keypoints)
+                    for index, point in ipairs(keypoints) do
+                        scaled[index] = NumberSequenceKeypoint.new(
+                            point.Time,
+                            point.Value * scale,
+                            point.Envelope * scale
+                        )
+                    end
+                    return NumberSequence.new(scaled)
+                end
+
+                local function applyAuraObjectSettings(records, sizeValue, verticalOffset)
+                    local sizeScale = math.clamp((tonumber(sizeValue) or 5) / 5, 0.25, 3)
+                    local offset = tonumber(verticalOffset) or 0
+                    for _, record in ipairs(records) do
+                        local object = record.Instance
+                        if object and object.Parent then
+                            pcall(function()
+                                if object:IsA('Attachment') and record.Position then
+                                    object.Position = record.Position + Vector3.new(0, offset, 0)
+                                elseif object:IsA('ParticleEmitter') and record.Size then
+                                    object.Size = scaleSequence(record.Size, sizeScale)
+                                elseif object:IsA('Beam') then
+                                    object.Width0 = (record.Width0 or object.Width0) * sizeScale
+                                    object.Width1 = (record.Width1 or object.Width1) * sizeScale
+                                elseif object:IsA('Trail') and record.WidthScale then
+                                    object.WidthScale = scaleSequence(record.WidthScale, sizeScale)
+                                elseif object:IsA('PointLight') or object:IsA('SpotLight') then
+                                    object.Range = (record.Range or object.Range) * sizeScale
+                                end
+                            end)
+                        end
+                    end
                 end
 
                 local function removeSelfAura()
-                    if selfEffectsInstance and isSelfAuraActive then
-                        pcall(function()
-                            selfEffectsInstance:destroy('aura')
-                        end)
-                        isSelfAuraActive = false
+                    if selfEffectsInstance and selfAuraActive then
+                        pcall(function() selfEffectsInstance:destroy('aura') end)
+                    end
+                    selfAuraActive = false
+                    selfAuraCharacter = nil
+                    selfAuraRecords = {}
+                end
+
+                local function applySelfAura(character)
+                    if not character or not character.Parent then
+                        return false
+                    end
+                    if type(selfEffectsInstance) ~= 'table' then
+                        local ok, instance = pcall(nativeAura.Factory, 'esp')
+                        if not ok or type(instance) ~= 'table' then
+                            control.auraError = 'UE native aura factory could not create an ESP effects instance.'
+                            return false
+                        end
+                        selfEffectsInstance = instance
+                    end
+
+                    removeSelfAura()
+                    local before = snapshotCharacter(character)
+                    local styles = selectionMap(selfAuraStyle)
+                    local ok, err = pcall(function()
+                        selfEffectsInstance:create(character, styles, 'aura')
+                        selfEffectsInstance:update('aura')
+                    end)
+                    if not ok then
+                        control.auraError = tostring(err)
+                        return false
+                    end
+                    selfAuraCharacter = character
+                    selfAuraActive = true
+                    selfAuraRecords = collectCreatedAuraObjects(character, before)
+                    applyAuraObjectSettings(selfAuraRecords, selfAuraSize.Value, selfAuraOffset.Value)
+                    control.auraError = nil
+                    return true
+                end
+
+                local selfAuraHue = 0
+                local enemyAuraHue = 0
+                local selfRainbowAccumulator = 0
+                local enemyRainbowAccumulator = 0
+                local lastSelfAuraColor
+                local lastEnemyAuraColor
+
+                local function getSelfAuraColor()
+                    if selfAuraRainbow.Value then
+                        return Color3.fromHSV(selfAuraHue, 1, 1)
+                    end
+                    return selfAuraColor.Value or Color3.new(1, 1, 1)
+                end
+
+                local function updateSelfAuraColor()
+                    if not (selfAuraActive and selfEffectsInstance) then
+                        return
+                    end
+                    local color = getSelfAuraColor()
+                    withNativeAuraColors(color, function()
+                        selfEffectsInstance:update('aura')
+                    end)
+                    if not selfAuraRainbow.Value then lastSelfAuraColor = selfAuraColor.Value end
+                end
+
+                local function getEnemyAuraColor()
+                    if enemyAuraRainbow.Value then
+                        return Color3.fromHSV(enemyAuraHue, 1, 1)
+                    end
+                    return enemyAuraColor.Value or Color3.fromRGB(255, 80, 80)
+                end
+
+                local function captureEnemyAuraObjects(snapshots)
+                    for character, before in pairs(snapshots) do
+                        if character and character.Parent then
+                            enemyAuraRecords[character] = collectCreatedAuraObjects(character, before)
+                            enemyAuraTracked[character] = true
+                            applyAuraObjectSettings(enemyAuraRecords[character], enemyAuraSize.Value, enemyAuraOffset.Value)
+                        end
                     end
                 end
 
                 local function syncEnemyAuraSettings()
-                    local isEnabled = enemyAuraToggle.Value
-                    local style = tostring(enemyAuraStyle.Value or 'tornado'):lower()
-                    local events = getEffectsEvents()
-
-                    if Options and Options.esp_effects_aura_value and type(Options.esp_effects_aura_value.SetValue) == 'function' then
-                        Options.esp_effects_aura_value:SetValue({ [style] = true, [tostring(enemyAuraStyle.Value)] = true })
+                    local snapshots = {}
+                    if enemyAuraToggle.Value then
+                        for _, player in ipairs(players:GetPlayers()) do
+                            if player ~= localPlayer and player.Character then
+                                snapshots[player.Character] = snapshotCharacter(player.Character)
+                            end
+                        end
                     end
 
-                    if Toggles and Toggles.esp_effects_aura and type(Toggles.esp_effects_aura.SetValue) == 'function' then
-                        Toggles.esp_effects_aura:SetValue(isEnabled)
+                    local styles = selectionMap(enemyAuraStyle)
+                    local enabled = enemyAuraToggle.Value == true
+                    local ok, err = pcall(function()
+                        setNativeAuraSelection(styles)
+                        nativeAura.Toggle:SetValue(enabled)
+                    end)
+                    if not ok then
+                        control.auraError = 'Could not update native enemy aura settings: ' .. tostring(err)
+                        return
                     end
-
-                    if events and events.events and events.events.esp_effects_changed then
-                        events.events.esp_effects_changed:Fire()
+                    if enabled then
+                        setNativeAuraColors(getEnemyAuraColor())
                     end
+                    fireNativeAuraChanged()
+                    if enabled then
+                        task.defer(function()
+                            captureEnemyAuraObjects(snapshots)
+                        end)
+                    else
+                        enemyAuraRecords = {}
+                        enemyAuraTracked = {}
+                        for index, color in ipairs(originalNativeColors) do
+                            if nativeColorOptions[index] and color ~= nil then
+                                pcall(function() nativeColorOptions[index].Value = color end)
+                            end
+                        end
+                        fireNativeAuraColorsChanged()
+                    end
+                    control.auraError = nil
                 end
 
-                selfAuraToggle:OnChanged(function()
-                    if selfAuraToggle.Value then
-                        applySelfAura(localPlayer.Character, selfAuraStyle.Value)
+                local function updateEnemyAuraColor()
+                    if not enemyAuraToggle.Value then
+                        return
+                    end
+                    local color = getEnemyAuraColor()
+                    setNativeAuraColors(color)
+                    fireNativeAuraColorsChanged()
+                    lastEnemyAuraColor = enemyAuraRainbow.Value and nil or enemyAuraColor.Value
+                end
+
+                selfAuraToggle:OnChanged(function(enabled)
+                    if enabled then
+                        applySelfAura(localPlayer.Character)
+                        updateSelfAuraColor()
                     else
                         removeSelfAura()
                     end
                 end)
-
                 selfAuraStyle:OnChanged(function()
                     if selfAuraToggle.Value then
-                        removeSelfAura()
-                        applySelfAura(localPlayer.Character, selfAuraStyle.Value)
+                        applySelfAura(localPlayer.Character)
+                        updateSelfAuraColor()
                     end
+                end)
+                selfAuraColor:OnChanged(function()
+                    if not selfAuraRainbow.Value then
+                        updateSelfAuraColor()
+                    end
+                end)
+                selfAuraRainbow:OnChanged(function()
+                    selfAuraHue = 0
+                    updateSelfAuraColor()
+                end)
+                selfAuraSize:OnChanged(function()
+                    applyAuraObjectSettings(selfAuraRecords, selfAuraSize.Value, selfAuraOffset.Value)
+                end)
+                selfAuraOffset:OnChanged(function()
+                    applyAuraObjectSettings(selfAuraRecords, selfAuraSize.Value, selfAuraOffset.Value)
                 end)
 
                 enemyAuraToggle:OnChanged(syncEnemyAuraSettings)
                 enemyAuraStyle:OnChanged(syncEnemyAuraSettings)
-
-                -- Modify native particle size, speed, and rainbow in real time
-                local function scaleParticleEmitters(parentPart, sizeScale, speedScale, overrideColor)
-                    if not parentPart then return end
-                    for _, desc in ipairs(parentPart:GetDescendants()) do
-                        if desc:IsA('ParticleEmitter') and (desc.Name == 'Aura' or desc.Name == 'particle' or desc.Name == 'Particle' or string.find(desc.Name, 'Aura') or desc.Parent:IsA('Attachment')) then
-                            if not desc:GetAttribute('__NativeSize') then
-                                desc:SetAttribute('__NativeSize', true)
-                                desc:SetAttribute('__BaseSpeedMin', desc.Speed.Min)
-                                desc:SetAttribute('__BaseSpeedMax', desc.Speed.Max)
-                                desc:SetAttribute('__BaseRate', desc.Rate)
-                            end
-
-                            -- Scale size
-                            if sizeScale and sizeScale ~= 1 then
-                                local sz = 1.2 * sizeScale
-                                desc.Size = NumberSequence.new({
-                                    NumberSequenceKeypoint.new(0, sz * 0.4),
-                                    NumberSequenceKeypoint.new(0.5, sz),
-                                    NumberSequenceKeypoint.new(1, 0),
-                                })
-                            end
-
-                            -- Scale speed and rate
-                            if speedScale and speedScale ~= 1 then
-                                local bMin = desc:GetAttribute('__BaseSpeedMin') or 0.8
-                                local bMax = desc:GetAttribute('__BaseSpeedMax') or 2.8
-                                local bRate = desc:GetAttribute('__BaseRate') or 22
-                                desc.Speed = NumberRange.new(bMin * speedScale, bMax * speedScale)
-                                desc.Rate = math.max(1, math.floor(bRate * math.clamp(speedScale, 0.4, 3.0)))
-                            end
-
-                            -- Apply color override / rainbow
-                            if overrideColor then
-                                desc.Color = ColorSequence.new(overrideColor)
-                            end
-                        end
+                enemyAuraColor:OnChanged(function()
+                    if not enemyAuraRainbow.Value then updateEnemyAuraColor() end
+                end)
+                enemyAuraRainbow:OnChanged(function()
+                    enemyAuraHue = 0
+                    updateEnemyAuraColor()
+                end)
+                enemyAuraSize:OnChanged(function()
+                    for _, records in pairs(enemyAuraRecords) do
+                        applyAuraObjectSettings(records, enemyAuraSize.Value, enemyAuraOffset.Value)
                     end
-                end
+                end)
+                enemyAuraOffset:OnChanged(function()
+                    for _, records in pairs(enemyAuraRecords) do
+                        applyAuraObjectSettings(records, enemyAuraSize.Value, enemyAuraOffset.Value)
+                    end
+                end)
 
-                local selfHue = 0
-                local enemyHue = 0
+                local charAddedConn = localPlayer.CharacterAdded:Connect(function(character)
+                    task.defer(function()
+                        if not control.stopped and selfAuraToggle.Value then
+                            applySelfAura(character)
+                            updateSelfAuraColor()
+                        end
+                    end)
+                end)
 
-                local auraHeartbeatConn = runService.Heartbeat:Connect(function(dt)
-                    -- 1. Self Aura Scaling & Rainbow
-                    if selfAuraToggle.Value then
-                        local char = localPlayer.Character
-                        if char then
-                            if not isSelfAuraActive or lastSelfStyle ~= tostring(selfAuraStyle.Value):lower() then
-                                applySelfAura(char, selfAuraStyle.Value)
+                -- Re-apply native visuals when a new enemy character appears. The
+                -- native renderer still decides which players qualify as enemies.
+                local enemyScanAccumulator = 0
+                local auraVisualConnection = runService.Heartbeat:Connect(function(dt)
+                    if control.stopped then return end
+
+                    if selfAuraToggle.Value and selfAuraActive then
+                        if selfAuraRainbow.Value then
+                            selfRainbowAccumulator = selfRainbowAccumulator + dt
+                            if selfRainbowAccumulator >= 0.06 then
+                                selfAuraHue = (selfAuraHue + selfRainbowAccumulator * 0.16) % 1
+                                selfRainbowAccumulator = 0
+                                updateSelfAuraColor()
                             end
-                            local szScale = (selfAuraSize.Value or 5) / 5
-                            local spdScale = (selfAuraSpeed.Value or 10) / 10
-                            local col = selfAuraColor.Value or Color3.fromRGB(255, 252, 255)
-                            if selfAuraRainbow.Value then
-                                selfHue = (selfHue + dt * (spdScale * 0.25)) % 1
-                                col = Color3.fromHSV(selfHue, 1, 1)
-                            end
-                            scaleParticleEmitters(char, szScale, spdScale, col)
+                        elseif selfAuraColor.Value ~= lastSelfAuraColor then
+                            updateSelfAuraColor()
+                            lastSelfAuraColor = selfAuraColor.Value
                         end
                     end
 
-                    -- 2. Enemy Aura Scaling & Rainbow
                     if enemyAuraToggle.Value then
-                        local szScale = (enemyAuraSize.Value or 5) / 5
-                        local spdScale = (enemyAuraSpeed.Value or 10) / 10
-                        local col = enemyAuraColor.Value or Color3.fromRGB(255, 60, 60)
                         if enemyAuraRainbow.Value then
-                            enemyHue = (enemyHue + dt * (spdScale * 0.25)) % 1
-                            col = Color3.fromHSV(enemyHue, 1, 1)
-                            if Options and Options.esp_effects_aura_color1 and type(Options.esp_effects_aura_color1.SetValueRGB) == 'function' then
-                                Options.esp_effects_aura_color1:SetValueRGB(col)
+                            enemyRainbowAccumulator = enemyRainbowAccumulator + dt
+                            if enemyRainbowAccumulator >= 0.06 then
+                                enemyRainbowAccumulator = 0
+                                enemyAuraHue = (enemyAuraHue + dt * 0.18) % 1
+                                updateEnemyAuraColor()
+                            end
+                        elseif enemyAuraColor.Value ~= lastEnemyAuraColor then
+                            updateEnemyAuraColor()
+                        end
+                        for character, records in pairs(enemyAuraRecords) do
+                            if not character.Parent then
+                                enemyAuraRecords[character] = nil
+                                enemyAuraTracked[character] = nil
                             end
                         end
-                        for _, p in ipairs(players:GetPlayers()) do
-                            if p ~= localPlayer and p.Character then
-                                scaleParticleEmitters(p.Character, szScale, spdScale, enemyAuraRainbow.Value and col or nil)
+
+                        enemyScanAccumulator = enemyScanAccumulator + dt
+                        if enemyScanAccumulator >= 0.5 then
+                            enemyScanAccumulator = 0
+                            local snapshots = {}
+                            for _, player in ipairs(players:GetPlayers()) do
+                                local character = player ~= localPlayer and player.Character
+                                if character and not enemyAuraTracked[character] then
+                                    snapshots[character] = snapshotCharacter(character)
+                                end
+                            end
+                            if next(snapshots) then
+                                fireNativeAuraChanged()
+                                task.defer(function() captureEnemyAuraObjects(snapshots) end)
                             end
                         end
                     end
                 end)
 
-                local charAddedConn = localPlayer.CharacterAdded:Connect(function(char)
-                    task.wait(0.2)
-                    if selfAuraToggle.Value then
-                        applySelfAura(char, selfAuraStyle.Value)
-                    end
-                end)
+                -- Initial synchronization also preserves an already-active native
+                -- enemy aura and makes all added settings immediately functional.
+                syncEnemyAuraSettings()
 
                 onCleanup(function()
-                    if auraHeartbeatConn then
-                        auraHeartbeatConn:Disconnect()
-                        auraHeartbeatConn = nil
-                    end
                     if charAddedConn then
-                        charAddedConn:Disconnect()
+                        pcall(function() charAddedConn:Disconnect() end)
                         charAddedConn = nil
                     end
+                    if auraVisualConnection then
+                        pcall(function() auraVisualConnection:Disconnect() end)
+                        auraVisualConnection = nil
+                    end
                     removeSelfAura()
-                    if Toggles and Toggles.esp_effects_aura and type(Toggles.esp_effects_aura.SetValue) == 'function' then
-                        Toggles.esp_effects_aura:SetValue(false)
-                        local events = getEffectsEvents()
-                        if events and events.events and events.events.esp_effects_changed then
-                            events.events.esp_effects_changed:Fire()
+                    if type(selfEffectsInstance) == 'table' and type(selfEffectsInstance.destroy) == 'function' then
+                        pcall(function() selfEffectsInstance:destroy('aura') end)
+                    end
+                    selfEffectsInstance = nil
+
+                    -- Restore original native style, enable state and color values.
+                    pcall(function()
+                        setNativeAuraSelection(selectionArrayMap(originalEnemyAuraSelection))
+                        nativeAura.Toggle:SetValue(originalEnemyAuraEnabled)
+                    end)
+                    for index, color in ipairs(originalNativeColors) do
+                        if nativeColorOptions[index] and color ~= nil then
+                            pcall(function() nativeColorOptions[index].Value = color end)
                         end
                     end
+                    fireNativeAuraChanged()
+                    fireNativeAuraColorsChanged()
+                    enemyAuraRecords = {}
+                    enemyAuraTracked = {}
                 end)
 
                 ------------------------------------------------------------------
