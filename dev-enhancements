@@ -1,4 +1,4 @@
--- __DEVKAGE_ENHANCEMENTS_MARKER_20261121__
+-- __UNNAMED_ENHANCEMENTS_MARKER_20261121__
 -- Hello from devkage
 
 if not game:IsLoaded() then
@@ -18521,7 +18521,13 @@ local function directEntry(...)
                                 if self.Ignore[loopKey2] then
                                     continue
                                 end
-                                table.insert(localValue8.objects, self.Parser[loopValue2.Type].Save(loopKey2, loopValue2))
+                                local toggleParser = loopValue2 and self.Parser[loopValue2.Type]
+                                if toggleParser and type(toggleParser.Save) == 'function' then
+                                    local okSave, savedObject = pcall(toggleParser.Save, loopKey2, loopValue2)
+                                    if okSave and savedObject then
+                                        table.insert(localValue8.objects, savedObject)
+                                    end
+                                end
                             end
                             for loopKey3, loopValue3 in next, capturedValue2 do
                                 if not self.Parser[loopValue3.Type] then
@@ -18541,18 +18547,63 @@ local function directEntry(...)
                             end
                             return true, localValue10
                         end
+                        capturedValue1.PendingConfig = {}
+                        local function isAddonConfigIndex(idx)
+                            return type(idx) == 'string' and (
+                                string.sub(idx, 1, 3) == 'DE_' or
+                                string.sub(idx, 1, 7) == 'Nebula_'
+                            )
+                        end
+                        local function configControlExists(kind, idx)
+                            local registry = kind == 'Toggle' and capturedValue3 or capturedValue2
+                            return type(registry) == 'table' and registry[idx] ~= nil
+                        end
+                        function capturedValue1:ApplyConfigObjects(objects)
+                            local pending = {}
+                            for _, object in next, objects or {} do
+                                if type(object) == 'table' then
+                                    local parser = self.Parser[object.type]
+                                    if parser and type(parser.Load) == 'function' then
+                                        if configControlExists(object.type, object.idx) then
+                                            local applied, applyError = pcall(parser.Load, object.idx, object)
+                                            if not applied then
+                                                warn('[SaveManager] Could not load ' .. tostring(object.idx) .. ': ' .. tostring(applyError))
+                                            end
+                                        elseif isAddonConfigIndex(object.idx) then
+                                            pending[#pending + 1] = object
+                                        end
+                                    end
+                                end
+                            end
+                            self.PendingConfig = pending
+                            return #pending
+                        end
+                        function capturedValue1:ApplyPendingConfig()
+                            local pending = self.PendingConfig
+                            if type(pending) ~= 'table' or #pending == 0 then
+                                return 0
+                            end
+                            local remaining = {}
+                            for _, object in ipairs(pending) do
+                                local parser = self.Parser[object.type]
+                                if parser and type(parser.Load) == 'function' and configControlExists(object.type, object.idx) then
+                                    local applied, applyError = pcall(parser.Load, object.idx, object)
+                                    if not applied then
+                                        warn('[SaveManager] Could not apply pending ' .. tostring(object.idx) .. ': ' .. tostring(applyError))
+                                    end
+                                else
+                                    remaining[#remaining + 1] = object
+                                end
+                            end
+                            self.PendingConfig = remaining
+                            return #remaining
+                        end
                         function capturedValue1:Load(argument30)
                             if (not argument30) then
                                 return false, 'no config file is selected'
                             end
                             if (type(argument30) == 'table') then
-                                for loopKey4, loopValue4 in next, argument30.objects do
-                                    if self.Parser[loopValue4.type] then
-                                        task.spawn(function()
-                                            self.Parser[loopValue4.type].Load(loopValue4.idx, loopValue4)
-                                        end)
-                                    end
-                                end
+                                self:ApplyConfigObjects(argument30.objects)
                                 return true
                             end
                             capturedValue1:CheckFolderTree()
@@ -18564,13 +18615,10 @@ local function directEntry(...)
                             if not localValue12 then
                                 return false, 'decode error'
                             end
-                            for loopKey5, loopValue5 in next, localValue13.objects do
-                                if self.Parser[loopValue5.type] then
-                                    task.spawn(function()
-                                        self.Parser[loopValue5.type].Load(loopValue5.idx, loopValue5)
-                                    end)
-                                end
+                            if type(localValue13) ~= 'table' or type(localValue13.objects) ~= 'table' then
+                                return false, 'invalid config data'
                             end
+                            self:ApplyConfigObjects(localValue13.objects)
                             return true
                         end
                         function capturedValue1:Delete(argument31)
@@ -19371,6 +19419,8 @@ local function directEntry(...)
                     local runService = game:GetService('RunService')
                     local localPlayer = players.LocalPlayer
                     local genv = (type(getgenv) == 'function' and getgenv()) or env
+                    genv.__UE_ADDON_READY = false
+                    genv.__UE_ADDON_ERROR = nil
                     local library = env.Library
                     local cleanups = {}
                     local function onCleanup(fn) cleanups[#cleanups + 1] = fn end
@@ -19385,6 +19435,44 @@ local function directEntry(...)
                     -- Right before each frame renders (before the camera updates) the real
                     -- position is put back, so the camera never follows the void.
                     local shield = { saved = nil }
+                    local nebulaCameraLock = { active = false, camera = nil, cframe = nil, focus = nil }
+                    local function lockNebulaCamera()
+                        if nebulaCameraLock.active then return end
+                        local camera = workspace.CurrentCamera
+                        if not camera then return end
+                        nebulaCameraLock.camera = camera
+                        nebulaCameraLock.cframe = camera.CFrame
+                        nebulaCameraLock.focus = camera.Focus
+                        nebulaCameraLock.active = true
+                    end
+                    local function unlockNebulaCamera()
+                        if not nebulaCameraLock.active then return end
+                        local camera = workspace.CurrentCamera or nebulaCameraLock.camera
+                        if camera and nebulaCameraLock.cframe and nebulaCameraLock.focus then
+                            pcall(function()
+                                camera.CFrame = nebulaCameraLock.cframe
+                                camera.Focus = nebulaCameraLock.focus
+                            end)
+                        end
+                        nebulaCameraLock.active = false
+                        nebulaCameraLock.camera = nil
+                        nebulaCameraLock.cframe = nil
+                        nebulaCameraLock.focus = nil
+                    end
+                    local nebulaCameraLockName = 'UE_NebulaCameraLock_' .. tostring(math.random(1, 1e9))
+                    runService:BindToRenderStep(nebulaCameraLockName, Enum.RenderPriority.Last.Value, function()
+                        if not nebulaCameraLock.active then return end
+                        local camera = workspace.CurrentCamera
+                        if camera and nebulaCameraLock.cframe and nebulaCameraLock.focus then
+                            nebulaCameraLock.camera = camera
+                            camera.CFrame = nebulaCameraLock.cframe
+                            camera.Focus = nebulaCameraLock.focus
+                        end
+                    end)
+                    onCleanup(function()
+                        unlockNebulaCamera()
+                        pcall(runService.UnbindFromRenderStep, runService, nebulaCameraLockName)
+                    end)
                     local function shieldBegin(root)
                         if not shield.saved and root and root.Parent then
                             shield.saved = {
@@ -19434,6 +19522,10 @@ local function directEntry(...)
                         end
 
                         local function step()
+                            -- God Mode and Nebula Counter both drive the same root part.
+                            -- Do not let two movement controllers fight over one character.
+                            local nebulaToggle = genv.Toggles and genv.Toggles.Nebula_Enabled
+                            if nebulaToggle and nebulaToggle.Value == true then return end
                             local hum, root = getParts()
                             if not hum then return end
                             local now = os.clock()
@@ -19697,6 +19789,7 @@ local function directEntry(...)
                 end
 
                 local function nebulaStop()
+                    unlockNebulaCamera()
                     neb.started = false
                     neb.mode = nil
                     neb.root = nil
@@ -19756,6 +19849,7 @@ local function directEntry(...)
                         nebulaStop()
                     end
                     if not neb.started then
+                        lockNebulaCamera()
                         neb.started = true
                         neb.mode = mode
                         neb.root = root
@@ -20322,6 +20416,12 @@ local function directEntry(...)
                         end)
                     end)
                 end)
+                local saveManager = genv.SaveManager or env.SaveManager
+                if saveManager and type(saveManager.ApplyPendingConfig) == 'function' then
+                    pcall(saveManager.ApplyPendingConfig, saveManager)
+                end
+                genv.__UE_ADDON_ERROR = not okAll and tostring(errAll) or nil
+                genv.__UE_ADDON_READY = true
                 if not okAll then warn('[Unnamed Enhancements addon] ' .. tostring(errAll)) end
             end)
         end
@@ -21930,7 +22030,7 @@ local function directEntry(...)
         sharedSlot1_94.current(sharedSlot1_95.current, sharedSlot1_96.current, sharedSlot1_97.current)
         do
             local godTab = sharedSlot1_93.current
-            godTab:AddToggle("ragebot_god_mode", { Text = "god mode", Default = false, Tooltip = "void spams your character so nothing can hit you and you take no damage" })
+            godTab:AddToggle("ragebot_god_mode", { Text = "god mode", Default = false, Tooltip = "Uses a brief position-desync attempt. Server-authoritative damage protection is not guaranteed." })
             local godDep = godTab:AddDependencyBox()
             godDep:AddSlider("ragebot_god_void_time", { Text = "void time", Default = 0.25, Min = 0.05, Max = 1, Suffix = "s", Rounding = 2, Compact = true, Tooltip = "how long you stay in the void each cycle" })
             godDep:AddSlider("ragebot_god_show_time", { Text = "visible time", Default = 0.02, Min = 0, Max = 0.2, Suffix = "s", Rounding = 2, Compact = true, Tooltip = "how long you pop back in; 0 = almost never visible" })
