@@ -1,4 +1,4 @@
--- __UNNAMED_ENHANCEMENTS_MARKER_20261121__
+-- __DEVKAGE_BUILD_20261121_AUTOLOAD_R2__
 -- Hello from devkage
 
 if not game:IsLoaded() then
@@ -18564,13 +18564,14 @@ local function directEntry(...)
                                 if type(object) == 'table' then
                                     local parser = self.Parser[object.type]
                                     if parser and type(parser.Load) == 'function' then
-                                        if configControlExists(object.type, object.idx) then
-                                            local applied, applyError = pcall(parser.Load, object.idx, object)
-                                            if not applied then
-                                                warn('[SaveManager] Could not load ' .. tostring(object.idx) .. ': ' .. tostring(applyError))
-                                            end
-                                        elseif isAddonConfigIndex(object.idx) then
+                                        if isAddonConfigIndex(object.idx) and not configControlExists(object.type, object.idx) then
+                                            -- Add-on controls may be registered after the main config is read.
                                             pending[#pending + 1] = object
+                                        else
+                                            -- Preserve the original deferred load timing for all regular controls.
+                                            task.spawn(function()
+                                                parser.Load(object.idx, object)
+                                            end)
                                         end
                                     end
                                 end
@@ -18587,10 +18588,9 @@ local function directEntry(...)
                             for _, object in ipairs(pending) do
                                 local parser = self.Parser[object.type]
                                 if parser and type(parser.Load) == 'function' and configControlExists(object.type, object.idx) then
-                                    local applied, applyError = pcall(parser.Load, object.idx, object)
-                                    if not applied then
-                                        warn('[SaveManager] Could not apply pending ' .. tostring(object.idx) .. ': ' .. tostring(applyError))
-                                    end
+                                    task.spawn(function()
+                                        parser.Load(object.idx, object)
+                                    end)
                                 else
                                     remaining[#remaining + 1] = object
                                 end
@@ -20434,41 +20434,74 @@ local function directEntry(...)
                     pcall(delfile, 'autoexec/fake_enhancements.lua')
                 end
                 task.wait(3)
-                local marker = '__UNNAMED_ENHANCEMENTS_MARKER_20261121__'
+                local marker = '__DEVKAGE_BUILD_20261121_AUTOLOAD_R2__'
                 local copyName = 'UnnamedEnhancements.lua'
                 local function readAll(p)
                     local ok, s = pcall(readfile, p)
                     if ok and type(s) == 'string' then return s end
                 end
-                local function isMine(s)
-                    return type(s) == 'string' and #s > 100000 and string.sub(s, 1, 120):find(marker, 1, true) ~= nil
+                local function isMine(sourceText)
+                    return type(sourceText) == 'string'
+                        and #sourceText > 100000
+                        and string.sub(sourceText, 1, 160):find(marker, 1, true) ~= nil
                 end
-                local function remember(path, source)
-                    pcall(writefile, 'DE_AUTOLOAD_PATH.txt', path)
-                    if path ~= copyName then pcall(writefile, copyName, source) end
+                local function remember(path, sourceText)
+                    local savedPathOk = pcall(writefile, 'DE_AUTOLOAD_PATH.txt', path)
+                    local copyOk = true
+                    if path ~= copyName then
+                        copyOk = pcall(writefile, copyName, sourceText)
+                    end
+                    return savedPathOk and copyOk
                 end
+
+                -- Only accept files carrying this exact build marker. This deliberately
+                -- rejects an older path cached by a previous release.
                 local savedPath = isfile('DE_AUTOLOAD_PATH.txt') and readAll('DE_AUTOLOAD_PATH.txt')
-                if savedPath and savedPath ~= '' and isfile(savedPath) then
-                    local s = readAll(savedPath)
-                    if isMine(s) then remember(savedPath, s) return end
+                if type(savedPath) == 'string' then
+                    savedPath = savedPath:gsub('%s+$', '')
+                    if savedPath ~= '' and isfile(savedPath) then
+                        local savedSource = readAll(savedPath)
+                        if isMine(savedSource) then
+                            remember(savedPath, savedSource)
+                            return
+                        end
+                    end
                 end
-                if isfile(copyName) and isMine(readAll(copyName)) then
-                    pcall(writefile, 'DE_AUTOLOAD_PATH.txt', copyName)
+
+                -- A cached copy is a fallback only after the exact-path check.
+                if isfile(copyName) then
+                    local cachedSource = readAll(copyName)
+                    if isMine(cachedSource) then
+                        pcall(writefile, 'DE_AUTOLOAD_PATH.txt', copyName)
+                        return
+                    end
+                end
+
+                if type(listfiles) ~= 'function' then
+                    warn('[devkage auto-load] Cannot locate the current script: listfiles is unavailable.')
                     return
                 end
-                if type(listfiles) ~= 'function' then return end
-                for _, folder in ipairs({ '', '.', 'autoexec', 'workspace', 'scripts' }) do
+                local scanned = {}
+                for _, folder in ipairs({ '', '.', 'workspace', 'scripts', 'autoexec', 'Downloads', 'downloads' }) do
                     local okL, files = pcall(listfiles, folder)
                     if okL and type(files) == 'table' then
                         for _, path in ipairs(files) do
-                            if type(path) == 'string' and (path:sub(-4) == '.lua' or path:sub(-4) == '.txt') and path ~= copyName then
-                                local s = readAll(path)
-                                if isMine(s) then remember(path, s) return end
-                                task.wait()
+                            if type(path) == 'string' and not scanned[path] then
+                                scanned[path] = true
+                                local lowerPath = path:lower()
+                                if (lowerPath:sub(-4) == '.lua' or lowerPath:sub(-4) == '.txt') and path ~= copyName then
+                                    local candidateSource = readAll(path)
+                                    if isMine(candidateSource) then
+                                        remember(path, candidateSource)
+                                        return
+                                    end
+                                    task.wait()
+                                end
                             end
                         end
                     end
                 end
+                warn('[devkage auto-load] Current build was not found in the executor file folders; the saved path was not updated.')
             end)
         end)
         -- ===== end addon =====
