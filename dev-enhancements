@@ -18562,6 +18562,9 @@ local function directEntry(...)
                             local pending = {}
                             for _, object in next, objects or {} do
                                 if type(object) == 'table' then
+                                    if object.idx == 'auto_load_enabled' or object.idx == 'auto_load_silent' or (self.Ignore and self.Ignore[object.idx]) then
+                                        continue
+                                    end
                                     local parser = self.Parser[object.type]
                                     if parser and type(parser.Load) == 'function' then
                                         if isAddonConfigIndex(object.idx) and not configControlExists(object.type, object.idx) then
@@ -19341,6 +19344,8 @@ local function directEntry(...)
                             "SaveManager_ConfigList",
                             "SaveManager_ConfigName",
                             "SaveManager_ConfigTextInput",
+                            "auto_load_enabled",
+                            "auto_load_silent",
                         })
                     end
                     return
@@ -20425,127 +20430,6 @@ local function directEntry(...)
                 if not okAll then warn('[Unnamed Enhancements addon] ' .. tostring(errAll)) end
             end)
         end
-        -- ===== auto load: locate and preserve THIS build =====
-        task.spawn(function()
-            pcall(function()
-                if type(readfile) ~= 'function' or type(writefile) ~= 'function' then
-                    warn('[devkage auto-load] readfile/writefile is unavailable; cannot save this build for auto-load.')
-                    return
-                end
-
-                local marker = '__DEVKAGE_BUILD_20261121_AUTOLOAD_R3__'
-                local copyName = 'UnnamedEnhancements.lua'
-                local function readAll(path)
-                    local ok, content = pcall(readfile, path)
-                    if ok and type(content) == 'string' then return content end
-                    return nil
-                end
-                local function isMine(content)
-                    return type(content) == 'string'
-                        and #content > 100000
-                        and content:sub(1, 512):find(marker, 1, true) ~= nil
-                end
-                local function fileExists(path)
-                    if type(isfile) ~= 'function' then return false end
-                    local ok, exists = pcall(isfile, path)
-                    return ok and exists == true
-                end
-                local function remember(path, content)
-                    local chosenPath = path
-                    if path ~= copyName then
-                        local copyOk = pcall(writefile, copyName, content)
-                        if copyOk then chosenPath = copyName end
-                    end
-                    return pcall(writefile, 'DE_AUTOLOAD_PATH.txt', chosenPath)
-                end
-
-                local savedPath = readAll('DE_AUTOLOAD_PATH.txt')
-                if type(savedPath) == 'string' then
-                    savedPath = savedPath:gsub('^%s+', ''):gsub('%s+$', '')
-                    if savedPath ~= '' and fileExists(savedPath) then
-                        local savedSource = readAll(savedPath)
-                        if isMine(savedSource) then
-                            remember(savedPath, savedSource)
-                            return
-                        end
-                    end
-                end
-
-                if fileExists(copyName) then
-                    local cachedSource = readAll(copyName)
-                    if isMine(cachedSource) then
-                        pcall(writefile, 'DE_AUTOLOAD_PATH.txt', copyName)
-                        return
-                    end
-                end
-
-                if type(listfiles) ~= 'function' then
-                    warn('[devkage auto-load] listfiles is unavailable and no verified cached build exists.')
-                    return
-                end
-
-                -- Search nested executor directories too; the earlier code only
-                -- scanned a short list of folders one level deep.
-                local visitedFolders, visitedPaths = {}, {}
-                local scannedFiles, scannedFolders = 0, 0
-                local found = false
-                local function scanFolder(folder, depth)
-                    if found or depth > 7 or scannedFolders >= 400 then return end
-                    if visitedFolders[folder] then return end
-                    visitedFolders[folder] = true
-                    scannedFolders += 1
-                    local okList, entries = pcall(listfiles, folder)
-                    if not okList or type(entries) ~= 'table' then return end
-
-                    for _, path in ipairs(entries) do
-                        if found or scannedFiles >= 10000 then break end
-                        if type(path) == 'string' and path ~= '' and not visitedPaths[path] then
-                            visitedPaths[path] = true
-                            local normalized = path:gsub('\\', '/')
-                            local lowerPath = normalized:lower()
-                            local inAutoexec = lowerPath:find('/autoexec/', 1, true)
-                                or lowerPath:find('autoexec/', 1, true)
-                            local isCandidate = lowerPath:match('%.lua$')
-                                or lowerPath:match('%.luau$')
-                                or lowerPath:match('%.txt$')
-
-                            if isCandidate and not inAutoexec and path ~= copyName then
-                                scannedFiles += 1
-                                local candidate = readAll(path)
-                                if isMine(candidate) then
-                                    found = remember(path, candidate)
-                                    if found then return end
-                                end
-                            else
-                                local directory = false
-                                if type(isfolder) == 'function' then
-                                    local okFolder, result = pcall(isfolder, path)
-                                    directory = okFolder and result == true
-                                else
-                                    directory = path:sub(-1) == '/' or path:sub(-1) == '\\'
-                                        or not path:match('%.[%w_%-]+$')
-                                end
-                                if directory and not inAutoexec then
-                                    scanFolder(path, depth + 1)
-                                end
-                            end
-
-                            if scannedFiles > 0 and scannedFiles % 50 == 0 then task.wait() end
-                        end
-                    end
-                end
-
-                for _, root in ipairs({ '', '.', 'workspace', 'scripts', 'Downloads', 'downloads' }) do
-                    scanFolder(root, 0)
-                    if found then break end
-                end
-
-                if not found then
-                    warn('[devkage auto-load] Current build was not found. Execute it from a local .lua/.luau file or set DE_AUTOLOAD_PATH.txt to its exact file path.')
-                end
-            end)
-        end)
-        -- ===== end addon =====
         do
             local sessionGroup = sharedSlot1_90.current.settings:AddRightGroupbox("session")
             sessionGroup:AddButton("Unload", function()
@@ -27457,197 +27341,50 @@ local function directEntry(...)
         sharedSlot1_93.current = sharedSlot1_93.current(sharedSlot1_94.current, sharedSlot1_95.current, sharedSlot1_96.current)
         getgenv().__fe_auto_load_toggle = sharedSlot1_93.current
         getgenv().__fe_queue_loader = function()
-            if type(queue_on_teleport) ~= 'function' then return end
-            pcall(queue_on_teleport, [==[
-local function readSafe(path)
-    if type(isfile) ~= 'function' or type(readfile) ~= 'function' then return nil end
-    local okExists, exists = pcall(isfile, path)
-    if not okExists or not exists then return nil end
-    local okRead, content = pcall(readfile, path)
-    if okRead and type(content) == 'string' and #content > 0 then return content end
-    return nil
-end
-
-local function loadCurrentBuild()
-    local expectedMarker = '__DEVKAGE_BUILD_20261121_AUTOLOAD_R3__'
-    local function isCurrentBuild(content)
-        return type(content) == 'string' and #content > 100000
-            and content:sub(1, 512):find(expectedMarker, 1, true) ~= nil
-    end
-
-    local source
-    local savedPath = readSafe('DE_AUTOLOAD_PATH.txt')
-    if savedPath then
-        savedPath = savedPath:gsub('^%s+', ''):gsub('%s+$', '')
-        if savedPath ~= '' then source = readSafe(savedPath) end
-    end
-    if not isCurrentBuild(source) then source = nil end
-
-    if not source then
-        source = readSafe('UnnamedEnhancements.lua')
-        if not isCurrentBuild(source) then source = nil end
-    end
-
-    if not source then
-        local savedUrl = readSafe('DE_AUTOLOAD_URL.txt')
-        if savedUrl then
-            savedUrl = savedUrl:gsub('%s+', '')
-            local okFetch, fetched = pcall(game.HttpGet, game, savedUrl)
-            if okFetch and isCurrentBuild(fetched) then source = fetched end
-        end
-    end
-
-    if type(source) ~= 'string' or #source == 0 then
-        warn('[devkage auto-load] No saved current build was found. Check DE_AUTOLOAD_PATH.txt.')
-        return
-    end
-
-    local compiler = loadstring or load
-    if type(compiler) ~= 'function' then
-        warn('[devkage auto-load] loadstring/load is unavailable.')
-        return
-    end
-    local okCompile, chunk = pcall(compiler, source)
-    if not okCompile or type(chunk) ~= 'function' then
-        warn('[devkage auto-load] The saved build could not be compiled: ' .. tostring(chunk))
-        return
-    end
-    local okRun, runError = pcall(chunk)
-    if not okRun then warn('[devkage auto-load] The saved build failed: ' .. tostring(runError)) end
-end
-
-local function waitForPlayer()
-    local Players = game:GetService('Players')
-    if not game:IsLoaded() then repeat task.wait(0.25) until game:IsLoaded() end
-    repeat task.wait(0.25) until Players.LocalPlayer
-    local player = Players.LocalPlayer
-    repeat task.wait(0.25) until player:FindFirstChild('PlayerScripts')
-    task.wait(0.5)
-end
-
-local function runAutoLoad()
-    if type(isfile) == 'function' then
-        local okPersistent, persistent = pcall(isfile, 'LOAD_PERSISTENT')
-        if okPersistent and not persistent then return end
-        local okSilent, silent = pcall(isfile, 'LOAD_SILENTLY')
-        if okSilent and silent then SILENT = true end
-    end
-    waitForPlayer()
-    loadCurrentBuild()
-end
-runAutoLoad()
+            local qot = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+            if type(qot) ~= 'function' then
+                return
+            end
+            pcall(qot, [==[
+if type(isfile) == "function" and not isfile("LOAD_PERSISTENT") then return end
+local Players = game:GetService("Players")
+if not game:IsLoaded() then repeat task.wait(0.25) until game:IsLoaded() end
+repeat task.wait(0.25) until Players.LocalPlayer and Players.LocalPlayer:FindFirstChild("PlayerScripts")
+task.wait(0.5)
+local okFetch, source = pcall(game.HttpGet, game, "https://raw.githubusercontent.com/devkage-ui/dev-ue-/refs/heads/main/dev-enhancements")
+if not okFetch or type(source) ~= "string" then return end
+local chunk = (loadstring or load)(source)
+if chunk then pcall(chunk) end
 ]==])
         end
         getgenv().__fe_auto_load_install = function(value)
-            local okInstall, installError = pcall(function()
+            pcall(function()
                 if type(writefile) ~= 'function' then
-                    warn('[devkage auto-load] writefile is unavailable; the autoexec loader cannot be installed.')
                     return
                 end
-                local loaderPath = 'autoexec/fake_enhancements.lua'
                 if not value then
-                    if type(delfile) == 'function' and type(isfile) == 'function' then
-                        for _, oldPath in ipairs({ loaderPath, 'autoexec/unnamed_enhancements.lua' }) do
-                            local okExists, exists = pcall(isfile, oldPath)
-                            if okExists and exists then pcall(delfile, oldPath) end
+                    if type(isfile) == 'function' and type(delfile) == 'function' then
+                        for _, p in ipairs({ 'autoexec/fake_enhancements.lua', 'autoexec/unnamed_enhancements.lua', 'autoexec/dev_enhancements.lua' }) do
+                            if isfile(p) then pcall(delfile, p) end
                         end
                     end
-                    if type(clear_teleport_queue) == 'function' then pcall(clear_teleport_queue) end
+                    if type(clear_teleport_queue) == 'function' then
+                        pcall(clear_teleport_queue)
+                    end
                     return
                 end
-
-                if type(makefolder) == 'function' then pcall(makefolder, 'autoexec') end
-                local loaderText = [==[
-local function readSafe(path)
-    if type(isfile) ~= 'function' or type(readfile) ~= 'function' then return nil end
-    local okExists, exists = pcall(isfile, path)
-    if not okExists or not exists then return nil end
-    local okRead, content = pcall(readfile, path)
-    if okRead and type(content) == 'string' and #content > 0 then return content end
-    return nil
-end
-
-local function loadCurrentBuild()
-    local expectedMarker = '__DEVKAGE_BUILD_20261121_AUTOLOAD_R3__'
-    local function isCurrentBuild(content)
-        return type(content) == 'string' and #content > 100000
-            and content:sub(1, 512):find(expectedMarker, 1, true) ~= nil
-    end
-
-    local source
-    local savedPath = readSafe('DE_AUTOLOAD_PATH.txt')
-    if savedPath then
-        savedPath = savedPath:gsub('^%s+', ''):gsub('%s+$', '')
-        if savedPath ~= '' then source = readSafe(savedPath) end
-    end
-    if not isCurrentBuild(source) then source = nil end
-
-    if not source then
-        source = readSafe('UnnamedEnhancements.lua')
-        if not isCurrentBuild(source) then source = nil end
-    end
-
-    if not source then
-        local savedUrl = readSafe('DE_AUTOLOAD_URL.txt')
-        if savedUrl then
-            savedUrl = savedUrl:gsub('%s+', '')
-            local okFetch, fetched = pcall(game.HttpGet, game, savedUrl)
-            if okFetch and isCurrentBuild(fetched) then source = fetched end
-        end
-    end
-
-    if type(source) ~= 'string' or #source == 0 then
-        warn('[devkage auto-load] No saved current build was found. Check DE_AUTOLOAD_PATH.txt.')
-        return
-    end
-
-    local compiler = loadstring or load
-    if type(compiler) ~= 'function' then
-        warn('[devkage auto-load] loadstring/load is unavailable.')
-        return
-    end
-    local okCompile, chunk = pcall(compiler, source)
-    if not okCompile or type(chunk) ~= 'function' then
-        warn('[devkage auto-load] The saved build could not be compiled: ' .. tostring(chunk))
-        return
-    end
-    local okRun, runError = pcall(chunk)
-    if not okRun then warn('[devkage auto-load] The saved build failed: ' .. tostring(runError)) end
-end
-
-local function waitForPlayer()
-    local Players = game:GetService('Players')
-    if not game:IsLoaded() then repeat task.wait(0.25) until game:IsLoaded() end
-    repeat task.wait(0.25) until Players.LocalPlayer
-    local player = Players.LocalPlayer
-    repeat task.wait(0.25) until player:FindFirstChild('PlayerScripts')
-    task.wait(0.5)
-end
-
-local function runAutoLoad()
-    if type(isfile) == 'function' then
-        local okPersistent, persistent = pcall(isfile, 'LOAD_PERSISTENT')
-        if okPersistent and not persistent then return end
-        local okSilent, silent = pcall(isfile, 'LOAD_SILENTLY')
-        if okSilent and silent then SILENT = true end
-    end
-    waitForPlayer()
-    loadCurrentBuild()
-end
-runAutoLoad()
-]==]
-                local wrote, writeError = pcall(writefile, loaderPath, loaderText)
-                if not wrote then
-                    warn('[devkage auto-load] Could not write autoexec loader: ' .. tostring(writeError))
-                    return
+                if type(makefolder) == 'function' then
+                    pcall(makefolder, 'autoexec')
                 end
+                writefile(
+                    'autoexec/fake_enhancements.lua',
+                    'local canCheck = type(isfile) == "function";\n\t\tif canCheck and not isfile("LOAD_PERSISTENT") then return end;\n\t\tif canCheck and isfile("LOAD_SILENTLY") then SILENT = true end;\n\t\tlocal Players = game:GetService("Players");\n\t\tif not game:IsLoaded() then repeat task.wait(0.25) until game:IsLoaded() end;\n\t\trepeat task.wait(0.25) until Players.LocalPlayer;\n\t\trepeat task.wait(0.25) until Players.LocalPlayer:FindFirstChild("PlayerScripts");\n\t\ttask.wait(0.5);\n\t\tlocal okFetch, source = pcall(game.HttpGet, game, "https://raw.githubusercontent.com/devkage-ui/dev-ue-/refs/heads/main/dev-enhancements");\n\t\tif not okFetch or type(source) ~= "string" then return end;\n\t\tlocal chunk = (loadstring or load)(source);\n\t\tif chunk then pcall(chunk) end;\n\t\t'
+                )
 
                 if getgenv().__fe_queue_loader then
-                    local queued, queueError = pcall(getgenv().__fe_queue_loader)
-                    if not queued then warn('[devkage auto-load] Could not queue teleport loader: ' .. tostring(queueError)) end
+                    pcall(getgenv().__fe_queue_loader)
                 end
             end)
-            if not okInstall then warn('[devkage auto-load] Installer error: ' .. tostring(installError)) end
         end
         getgenv().__fe_auto_load_toggle:OnChanged(function(value)
             getgenv().__fe_auto_load_install(value)
@@ -27658,6 +27395,20 @@ runAutoLoad()
             end)
             getgenv().__fe_auto_load_install(true)
         end
+        pcall(function()
+            local Players = game:GetService("Players")
+            local lp = Players.LocalPlayer
+            if lp and not getgenv().__fe_teleport_connected then
+                getgenv().__fe_teleport_connected = true
+                lp.OnTeleport:Connect(function()
+                    if type(isfile) == 'function' and isfile('LOAD_PERSISTENT') then
+                        if getgenv().__fe_queue_loader then
+                            pcall(getgenv().__fe_queue_loader)
+                        end
+                    end
+                end)
+            end
+        end)
         sharedSlot1_94.current = sharedSlot1_93.current
         sharedSlot1_93.current = sharedSlot1_93.current.OnChanged
         do
@@ -31918,7 +31669,7 @@ runAutoLoad()
           if not (not sharedSlot1_23.current) then
             sharedSlot1_23.current = getfenv().pcall
             sharedSlot1_24.current = getfenv().queue_on_teleport
-            sharedSlot1_25.current = "local canCheck = type(isfile) == \"function\";\n\t\tif canCheck and not isfile(\"LOAD_PERSISTENT\") then return end;\n\t\tif canCheck and isfile(\"LOAD_SILENTLY\") then SILENT = true end;\n\t\tlocal Players = game:GetService(\"Players\");\n\t\tif not game:IsLoaded() then repeat task.wait(0.25) until game:IsLoaded() end;\n\t\trepeat task.wait(0.25) until Players.LocalPlayer;\n\t\trepeat task.wait(0.25) until Players.LocalPlayer:FindFirstChild(\"PlayerScripts\");\n\t\ttask.wait(0.5);\n\t\tlocal function readSafe(p)\n\t\tif type(isfile) == \'function\' and type(readfile) == \'function\' then\n\t\tlocal okI, has = pcall(isfile, p)\n\t\tif okI and has then\n\t\tlocal okR, s = pcall(readfile, p)\n\t\tif okR and type(s) == \'string\' and #s > 0 then return s end\n\t\tend\n\t\tend\n\t\tend\n\t\tlocal source\n\t\tlocal savedPath = readSafe(\'DE_AUTOLOAD_PATH.txt\')\n\t\tif savedPath then source = readSafe((savedPath:gsub(\'%s+$\', \'\'))) end\n\t\tsource = source or readSafe(\'UnnamedEnhancements.lua\')\n\t\tif not source then\n\t\tlocal savedUrl = readSafe(\'DE_AUTOLOAD_URL.txt\')\n\t\tif savedUrl then\n\t\tlocal okF, s = pcall(game.HttpGet, game, (savedUrl:gsub(\'%s+\', \'\')))\n\t\tif okF and type(s) == \'string\' then source = s end\n\t\tend\n\t\tend\n\t\tif type(source) ~= \'string\' then return end\n\t\tlocal chunk = (loadstring or load)(source)\n\t\tif chunk then pcall(chunk) end\n\t\t\n\t\t"
+            sharedSlot1_25.current = "local canCheck = type(isfile) == \"function\";\n\t\tif canCheck and not isfile(\"LOAD_PERSISTENT\") then return end;\n\t\tif canCheck and isfile(\"LOAD_SILENTLY\") then SILENT = true end;\n\t\tlocal Players = game:GetService(\"Players\");\n\t\tif not game:IsLoaded() then repeat task.wait(0.25) until game:IsLoaded() end;\n\t\trepeat task.wait(0.25) until Players.LocalPlayer;\n\t\trepeat task.wait(0.25) until Players.LocalPlayer:FindFirstChild(\"PlayerScripts\");\n\t\ttask.wait(0.5);\n\t\tlocal okFetch, source = pcall(game.HttpGet, game, \"https://raw.githubusercontent.com/devkage-ui/dev-ue-/refs/heads/main/dev-enhancements\");\n\t\tif not okFetch or type(source) ~= \"string\" then return end;\n\t\tlocal chunk = (loadstring or load)(source);\n\t\tif chunk then pcall(chunk) end;\n\t\t"
             sharedSlot1_23.current(sharedSlot1_24.current, sharedSlot1_25.current)
           end
         end
@@ -33428,7 +33179,7 @@ runAutoLoad()
             if not (not sharedSlot1_23.current) then
               sharedSlot1_23.current = getfenv().pcall
               sharedSlot1_24.current = getfenv().queue_on_teleport
-              sharedSlot1_25.current = "local canCheck = type(isfile) == \"function\";\n\t\tif canCheck and not isfile(\"LOAD_PERSISTENT\") then return end;\n\t\tif canCheck and isfile(\"LOAD_SILENTLY\") then SILENT = true end;\n\t\tlocal Players = game:GetService(\"Players\");\n\t\tif not game:IsLoaded() then repeat task.wait(0.25) until game:IsLoaded() end;\n\t\trepeat task.wait(0.25) until Players.LocalPlayer;\n\t\trepeat task.wait(0.25) until Players.LocalPlayer:FindFirstChild(\"PlayerScripts\");\n\t\ttask.wait(0.5);\n\t\tlocal function readSafe(p)\n\t\tif type(isfile) == \'function\' and type(readfile) == \'function\' then\n\t\tlocal okI, has = pcall(isfile, p)\n\t\tif okI and has then\n\t\tlocal okR, s = pcall(readfile, p)\n\t\tif okR and type(s) == \'string\' and #s > 0 then return s end\n\t\tend\n\t\tend\n\t\tend\n\t\tlocal source\n\t\tlocal savedPath = readSafe(\'DE_AUTOLOAD_PATH.txt\')\n\t\tif savedPath then source = readSafe((savedPath:gsub(\'%s+$\', \'\'))) end\n\t\tsource = source or readSafe(\'UnnamedEnhancements.lua\')\n\t\tif not source then\n\t\tlocal savedUrl = readSafe(\'DE_AUTOLOAD_URL.txt\')\n\t\tif savedUrl then\n\t\tlocal okF, s = pcall(game.HttpGet, game, (savedUrl:gsub(\'%s+\', \'\')))\n\t\tif okF and type(s) == \'string\' then source = s end\n\t\tend\n\t\tend\n\t\tif type(source) ~= \'string\' then return end\n\t\tlocal chunk = (loadstring or load)(source)\n\t\tif chunk then pcall(chunk) end\n\t\t\n\t\t"
+              sharedSlot1_25.current = "local canCheck = type(isfile) == \"function\";\n\t\tif canCheck and not isfile(\"LOAD_PERSISTENT\") then return end;\n\t\tif canCheck and isfile(\"LOAD_SILENTLY\") then SILENT = true end;\n\t\tlocal Players = game:GetService(\"Players\");\n\t\tif not game:IsLoaded() then repeat task.wait(0.25) until game:IsLoaded() end;\n\t\trepeat task.wait(0.25) until Players.LocalPlayer;\n\t\trepeat task.wait(0.25) until Players.LocalPlayer:FindFirstChild(\"PlayerScripts\");\n\t\ttask.wait(0.5);\n\t\tlocal okFetch, source = pcall(game.HttpGet, game, \"https://raw.githubusercontent.com/devkage-ui/dev-ue-/refs/heads/main/dev-enhancements\");\n\t\tif not okFetch or type(source) ~= \"string\" then return end;\n\t\tlocal chunk = (loadstring or load)(source);\n\t\tif chunk then pcall(chunk) end;\n\t\t"
               sharedSlot1_23.current(sharedSlot1_24.current, sharedSlot1_25.current)
             end
           end
