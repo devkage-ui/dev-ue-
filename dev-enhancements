@@ -1,4 +1,4 @@
--- __DEVKAGE_BUILD_20261122_AUTOLOAD_R6__
+-- __DEVKAGE_BUILD_20261122_AUTOLOAD_R9__
 -- Hello from devkage
 
 if not game:IsLoaded() then
@@ -18424,15 +18424,14 @@ local function directEntry(...)
                             end
                         end
 
-                        -- Prefer this script's current UI registry. getgenv() can retain
-                        -- tables from a previous execution, so it is a fallback, not the
-                        -- source of truth for controls just created by this run.
-                        if type(activeEnv) == 'table' then
-                            addRegistry(rawget(activeEnv, registryName))
-                        end
-                        if type(globalEnv) == 'table' then
-                            addRegistry(rawget(globalEnv, registryName))
-                        end
+                        -- Search all relevant registries in priority order. An executor can
+                        -- expose an empty environment-local registry while the live controls
+                        -- are held by getgenv() or the registry captured by the UI library.
+                        -- Do not stop merely because the first candidate is a table; it may
+                        -- be empty or stale during startup. The active table remains first,
+                        -- so a current control wins when the same index exists more than once.
+                        addRegistry(type(activeEnv) == 'table' and rawget(activeEnv, registryName) or nil)
+                        addRegistry(type(globalEnv) == 'table' and rawget(globalEnv, registryName) or nil)
                         addRegistry(fallbackRegistry)
                         return registries
                     end
@@ -18633,7 +18632,8 @@ local function directEntry(...)
                                 string.sub(idx, 1, 3)  == 'DE_'             or
                                 string.sub(idx, 1, 7)  == 'Nebula_'         or
                                 string.sub(idx, 1, 14) == 'fake_position_'  or
-                                string.sub(idx, 1, 18) == 'ragebot_underground'
+                                string.sub(idx, 1, 19) == 'ragebot_underground' or
+                                string.sub(idx, 1, 12) == 'ragebot_god_'
                             )
                         end
                         local function configControlExists(kind, idx)
@@ -18641,6 +18641,11 @@ local function directEntry(...)
                         end
                         function capturedValue1:ApplyConfigObjects(objects)
                             local pending = {}
+                            local applied, failed = 0, 0
+                            -- Config objects are written with toggles first, then options.
+                            -- Apply synchronously to preserve that dependency order; spawning
+                            -- one task per control allowed Load() to return before settings were
+                            -- actually restored and let dependent values race their toggles.
                             for _, object in next, objects or {} do
                                 if type(object) == 'table' then
                                     if object.idx == 'auto_load_enabled' or object.idx == 'auto_load_silent' or (self.Ignore and self.Ignore[object.idx]) then
@@ -18649,18 +18654,18 @@ local function directEntry(...)
                                     local parser = self.Parser[object.type]
                                     if parser and type(parser.Load) == 'function' then
                                         if isAddonConfigIndex(object.idx) and not configControlExists(object.type, object.idx) then
-                                            -- Add-on controls may be registered after the main config is read.
+                                            -- Only known late add-on controls are retried. Unknown
+                                            -- obsolete config keys must not hold startup for a minute.
                                             pending[#pending + 1] = object
-                                        else
-                                            -- Preserve the original deferred load timing for all regular controls.
-                                            task.spawn(function()
-                                                parser.Load(object.idx, object)
-                                            end)
+                                        elseif configControlExists(object.type, object.idx) then
+                                            local okApply = pcall(parser.Load, object.idx, object)
+                                            if okApply then applied += 1 else failed += 1 end
                                         end
                                     end
                                 end
                             end
                             self.PendingConfig = pending
+                            self.LastConfigApplyStats = { Applied = applied, Failed = failed, Pending = #pending }
                             return #pending
                         end
                         function capturedValue1:ApplyPendingConfig()
@@ -18669,17 +18674,22 @@ local function directEntry(...)
                                 return 0
                             end
                             local remaining = {}
+                            local applied, failed = 0, 0
                             for _, object in ipairs(pending) do
                                 local parser = self.Parser[object.type]
                                 if parser and type(parser.Load) == 'function' and configControlExists(object.type, object.idx) then
-                                    task.spawn(function()
-                                        parser.Load(object.idx, object)
-                                    end)
+                                    local okApply = pcall(parser.Load, object.idx, object)
+                                    if okApply then applied += 1 else failed += 1 end
                                 else
                                     remaining[#remaining + 1] = object
                                 end
                             end
                             self.PendingConfig = remaining
+                            local previous = self.LastConfigApplyStats or { Applied = 0, Failed = 0 }
+                            previous.Applied = (previous.Applied or 0) + applied
+                            previous.Failed = (previous.Failed or 0) + failed
+                            previous.Pending = #remaining
+                            self.LastConfigApplyStats = previous
                             return #remaining
                         end
                         function capturedValue1:Load(argument30)
@@ -18771,16 +18781,30 @@ local function directEntry(...)
                         end
                         function capturedValue1:LoadAutoloadConfig()
                             capturedValue1:CheckFolderTree()
-                            if localValue3(self.Folder .. '/settings/autoload.txt') then
-                                local localValue23 = readfile(self.Folder .. '/settings/autoload.txt')
-                                local localValue24, localValue25 = self:Load(localValue23)
-                                if not localValue24 then
-                                    return self.Library:Notify('Failed to load autoload config: ' .. localValue25)
-                                end
-                                if (not SILENT) then
-                                    self.Library:Notify(string.format('Auto loaded config %q', localValue23))
-                                end
+                            local autoloadPath = self.Folder .. '/settings/autoload.txt'
+                            if not localValue3(autoloadPath) then
+                                return false, 'autoload marker not found: ' .. autoloadPath
                             end
+
+                            local readOk, rawConfigName = pcall(readfile, autoloadPath)
+                            if not readOk then
+                                return false, 'could not read autoload marker: ' .. tostring(rawConfigName)
+                            end
+                            local configName = tostring(rawConfigName or ''):match('^%s*(.-)%s*$') or ''
+                            configName = configName:gsub('%.json$', '')
+                            if configName == '' then
+                                return false, 'autoload config name is empty'
+                            end
+
+                            local loadOk, loadError = self:Load(configName)
+                            if not loadOk then
+                                return false, 'failed to load config ' .. string.format('%q', configName) .. ': ' .. tostring(loadError)
+                            end
+
+                            if not SILENT and self.Library and type(self.Library.Notify) == 'function' then
+                                pcall(self.Library.Notify, self.Library, string.format('Auto loaded config %q', configName))
+                            end
+                            return true, configName
                         end
                     end
                     getgenv().SaveManager = capturedValue1
@@ -19498,6 +19522,17 @@ local function directEntry(...)
         -- ===== Unnamed Enhancements addon: god mode / rainbow / wave / aura =====
         do
             local deTabs = sharedSlot1_90.current
+            -- Reset readiness synchronously, before task.spawn can race the autoload tail.
+            local addonStartupEnv = getfenv()
+            local addonStartupGenv = addonStartupEnv
+            if type(getgenv) == 'function' then
+                local startupOk, startupGlobal = pcall(getgenv)
+                if startupOk and type(startupGlobal) == 'table' then
+                    addonStartupGenv = startupGlobal
+                end
+            end
+            addonStartupGenv.__UE_ADDON_READY = false
+            addonStartupGenv.__UE_ADDON_ERROR = nil
             task.spawn(function()
                 local okAll, errAll = pcall(function()
                     local env = getfenv()
@@ -19568,7 +19603,7 @@ local function directEntry(...)
                         end
                     end
                     local shieldName = 'UE_CamShield_' .. tostring(math.random(1, 1e9))
-                    runService:BindToRenderStep(shieldName, Enum.RenderPriority.First.Value, function()
+                    runService:BindToRenderStep(shieldName, Enum.RenderPriority.Camera.Value - 1, function()
                         local s = shield.saved
                         if s then
                             shield.saved = nil
@@ -19694,7 +19729,7 @@ local function directEntry(...)
                                 phase, phaseUntil = 'void', 0
                                 -- Enable void protection so underground/god mode don't trigger kill plane
                                 setVoidProtect(true)
-                                godModeConnection = runService.Heartbeat:Connect(function()
+                                godModeConnection = runService.PreSimulation:Connect(function()
                                     if not godModeAlive then return end
                                     if Toggles.ragebot_enabled and Toggles.ragebot_enabled.Value
                                         and Toggles.ragebot_void_spam and Toggles.ragebot_void_spam.Value then
@@ -19725,7 +19760,7 @@ local function directEntry(...)
                                     if not godModeConnection then
                                         -- Run underground-only heartbeat when god mode is off
                                         phase, phaseUntil = 'void', 0
-                                        godModeConnection = runService.Heartbeat:Connect(function()
+                                        godModeConnection = runService.PreSimulation:Connect(function()
                                             if not godModeAlive then return end
                                             local ugOn = ugT and ugT.Value == true
                                             local godOn = godToggle and godToggle.Value == true
@@ -19845,7 +19880,7 @@ local function directEntry(...)
                     -- COMBAT TAB: Fake Position (below Targeting, left side)
                     -- Uses the native library controls and shared camera shield.
                     ----------------------------------------------------------
-                    pcall(function()
+                    local fakePositionSetupOk, fakePositionSetupError = pcall(function()
                         local combatTab = deTabs.main
                         if not combatTab then error('Combat tab unavailable') end
 
@@ -19911,7 +19946,7 @@ local function directEntry(...)
                             Text = 'evasion mode',
                             Values = { 'random', 'projectile breaker', 'spin' },
                             Default = 'projectile breaker',
-                            Tooltip = 'random: teleport to unpredictable positions. projectile breaker: oscillate depth to deflect incoming projectiles. spin: circular evasion arc.',
+                            Tooltip = 'random: use unpredictable offsets. projectile breaker: oscillate target-relative depth and height; does not scan projectile trajectories. spin: circular evasion arc.',
                         })
                         local fakePositionEvasionRadius = addSlider(fakePositionEvasionSettings, 'fake_position_evasion_radius', {
                             Text = 'evasion radius', Default = 80, Min = 5, Max = 400,
@@ -20175,9 +20210,8 @@ local function directEntry(...)
                         local function anotherPositionControllerActive()
                             local god = Toggles.ragebot_god_mode
                             if god and god.Value == true then return true end
-                            local rage = Toggles.ragebot_enabled
-                            local voidSpam = Toggles.ragebot_void_spam
-                            if rage and rage.Value == true and voidSpam and voidSpam.Value == true then return true end
+                            -- Ragebot Void Spam is a separate attack-worker setting; it does
+                            -- not own HumanoidRootPart movement and should not disable Fake Position.
                             local nebula = genv.Toggles and genv.Toggles.Nebula_Enabled
                             return nebula and nebula.Value == true
                         end
@@ -20195,7 +20229,7 @@ local function directEntry(...)
                         local function setFakePosition(enabled)
                             if enabled then
                                 if fakePositionConnection then return end
-                                fakePositionConnection = runService.Heartbeat:Connect(function()
+                                fakePositionConnection = runService.PreSimulation:Connect(function()
                                     local okStep = pcall(function()
                                         local humanoid, root = getLocalParts()
                                         if not humanoid or not root then
@@ -20209,19 +20243,21 @@ local function directEntry(...)
                                             activeHumanoid = humanoid
                                             savedAutoRotate = humanoid.AutoRotate
                                         end
-                                        humanoid.AutoRotate = false
 
                                         if anotherPositionControllerActive() then
                                             destroyVisuals()
+                                            restoreAutoRotate()
                                             return
                                         end
 
                                         local targetRoot, distance = nearestTarget(root)
                                         if not targetRoot then
                                             destroyVisuals()
+                                            restoreAutoRotate()
                                             return
                                         end
 
+                                        humanoid.AutoRotate = false
                                         local goal = makeGoal(targetRoot, root)
                                         local final = goal
                                         local jitterEnabled = fakePositionJitter.Value == true
@@ -20272,8 +20308,20 @@ local function directEntry(...)
                                                     _evasionOffsetCF = CFrame.new(math.cos(angle2) * dist2, 0, math.sin(angle2) * dist2)
                                                 end
                                             end
-                                            -- Apply the evasion offset: shift the server-replicated final CFrame
-                                            final = CFrame.new(final.Position + _evasionOffsetCF.Position) * CFrame.Angles(final:ToEulerAnglesXYZ())
+                                            -- Apply the offset in the target-relative forward direction for
+                                            -- Projectile Breaker. Random and Spin keep their world-space arc.
+                                            local evasionOffset = _evasionOffsetCF.Position
+                                            if evasionMode == 'projectile breaker' then
+                                                local forward = final.LookVector
+                                                forward = Vector3.new(forward.X, 0, forward.Z)
+                                                if forward.Magnitude > 0.001 then
+                                                    forward = forward.Unit
+                                                else
+                                                    forward = Vector3.new(0, 0, -1)
+                                                end
+                                                evasionOffset = forward * _evasionOffsetCF.Z + Vector3.new(0, _evasionOffsetCF.Y, 0)
+                                            end
+                                            final = CFrame.new(final.Position + evasionOffset) * final.Rotation
                                         end
 
                                         -- Shared shield restores the local render position while
@@ -20303,6 +20351,9 @@ local function directEntry(...)
                         end)
                         if fakePositionToggle.Value == true then setFakePosition(true) end
                     end)
+                    if not fakePositionSetupOk then
+                        warn('[DevKage Fake Position] ' .. tostring(fakePositionSetupError))
+                    end
 
                     ----------------------------------------------------------
                     -- CHARACTER TAB: Nebula Counter (right side, above aura)
@@ -20502,7 +20553,8 @@ local function directEntry(...)
                         nebulaStop()
                     end
                     if not neb.started then
-                        lockNebulaCamera()
+                        -- shieldBegin() restores the local root just before the camera update;
+                        -- leave the normal camera controller enabled so the view remains usable.
                         neb.started = true
                         neb.mode = mode
                         neb.root = root
@@ -20655,7 +20707,7 @@ local function directEntry(...)
 
                 moveGroupboxToTop(characterTab, nebulaBox)
 
-                local nebulaConnection = runService.Heartbeat:Connect(function(dt)
+                local nebulaConnection = runService.PreSimulation:Connect(function(dt)
                     if control.stopped then
                         return
                     end
@@ -20680,13 +20732,28 @@ local function directEntry(...)
                     ----------------------------------------------------------
                     -- CHARACTER TAB: aura controls (native UE aura engine)
                     ----------------------------------------------------------
-                    pcall(function()
+                    local auraSetupOk, auraSetupError = pcall(function()
                         local characterTab = deTabs.character
-                        local auraDropdown = Options.esp_effects_aura_value
-                        local auraToggle = Toggles.esp_effects_aura
-                        local t2 = os.clock() + 30
-                        while (type(auraDropdown.Values) ~= 'table' or #auraDropdown.Values == 0) and os.clock() < t2 do
-                            task.wait(0.25)
+                        local auraDropdown, auraToggle
+                        local auraDeadline = os.clock() + 60
+                        repeat
+                            local liveOptions = registry('Options')
+                            local liveToggles = registry('Toggles')
+                            auraDropdown = liveOptions.esp_effects_aura_value
+                            auraToggle = liveToggles.esp_effects_aura
+                            if auraDropdown and auraToggle
+                                and type(auraDropdown.Values) == 'table'
+                                and #auraDropdown.Values > 0 then
+                                Options, Toggles = liveOptions, liveToggles
+                                break
+                            end
+                            task.wait(0.1)
+                        until os.clock() >= auraDeadline
+                        if not auraDropdown or not auraToggle then
+                            error('native aura controls were not registered before timeout')
+                        end
+                        if type(auraDropdown.Values) ~= 'table' or #auraDropdown.Values == 0 then
+                            error('native aura styles were not populated before timeout')
                         end
                         local values = {}
                         for _, v in ipairs(auraDropdown.Values or {}) do
@@ -20695,7 +20762,6 @@ local function directEntry(...)
                         if #values == 0 then error('native aura values unavailable') end
                         local multi = auraDropdown.Multi == true
                         local factory = rawget(genv, '__UE_EffectsFactory')
-                        local events = rawget(genv, '__UE_EffectsEvents')
                         local function sel(ctrl)
                             local out, v = {}, ctrl.Value
                             if type(v) == 'table' then
@@ -20713,7 +20779,9 @@ local function directEntry(...)
                             end
                         end
                         local function fireChanged()
-                            local sig = type(events) == 'table' and type(events.events) == 'table' and events.events.esp_effects_changed
+                            -- UE creates its effect event table after these addon controls.
+                            local events = rawget(genv, '__UE_EffectsEvents')
+                            local sig = type(events) == 'table' and type(events.events) == 'table' and events.events.self_effects_changed
                             if sig and sig.Fire then pcall(function() sig:Fire() end) end
                         end
                         local origEnabled = auraToggle.Value == true
@@ -20823,6 +20891,9 @@ local function directEntry(...)
                             fireChanged()
                         end)
                     end)
+                    if not auraSetupOk then
+                        warn('[DevKage Aura Effects] ' .. tostring(auraSetupError))
+                    end
 
                     ----------------------------------------------------------
                     -- SETTINGS TAB: Rainbow Accent, UI Glow, UI Wave
@@ -57249,32 +57320,86 @@ if chunk then pcall(chunk) end
                   controlFlow1_loopLimit = controlFlow1_priorLoopContext9776.limit
                   controlFlow1_loopCursor = controlFlow1_priorLoopContext9776.cursor
                   getfenv().SCRIPT_FINISHED = true
-                  localSlot1_100 = (localSlot1_77[("save_manager")])
-                  sharedSlot1_101.current = localSlot1_100
                   do
-                      -- FIX R6: addon controls are registered after SaveManager is created.
-                      -- Resolve live registries on every save/load (and prefer the current
-                      -- script's controls over stale getgenv() entries), then wait for the
-                      -- addon builder to finish before autoloading and flushing pending keys.
-                      local capturedSaveManager = sharedSlot1_101.current
+                      -- Restore the original, script-local SaveManager reference used by
+                      -- the earlier working autoload path. Looking up getgenv().SaveManager
+                      -- can select a stale manager from a prior execution.
+                      local capturedSaveManager = localSlot1_77 and localSlot1_77.save_manager
                       task.spawn(function()
-                          local genv = (type(getgenv) == "function" and getgenv()) or getfenv()
-                          local waited = 0
-                          while not genv.__UE_ADDON_READY and waited < 30 do
+                          local managerDeadline = os.clock() + 8
+                          while (type(capturedSaveManager) ~= 'table'
+                              or type(capturedSaveManager.LoadAutoloadConfig) ~= 'function'
+                              or type(capturedSaveManager.Folder) ~= 'string'
+                              or capturedSaveManager.Folder == '')
+                              and os.clock() < managerDeadline do
                               task.wait(0.05)
-                              waited = waited + 0.05
                           end
-                          -- Give the control registry one scheduler turn to settle before
-                          -- deserializing. The SaveManager now resolves live registries, and
-                          -- this bounded flush handles controls registered at the READY edge.
-                          task.wait(0.05)
-                          pcall(capturedSaveManager.LoadAutoloadConfig, capturedSaveManager)
-                          if type(capturedSaveManager.ApplyPendingConfig) == "function" then
-                              for _ = 1, 30 do
-                                  task.wait(0.1)
-                                  local remaining = capturedSaveManager:ApplyPendingConfig()
-                                  if not remaining or remaining == 0 then break end
+
+                          if type(capturedSaveManager) ~= 'table'
+                              or type(capturedSaveManager.LoadAutoloadConfig) ~= 'function'
+                              or type(capturedSaveManager.Folder) ~= 'string'
+                              or capturedSaveManager.Folder == '' then
+                              warn('[DevKage AutoLoad] the current script SaveManager was not ready')
+                              return
+                          end
+
+                          -- Load the base config immediately; add-on settings that have not
+                          -- registered yet are queued and restored by the short retry below.
+                          local okCall, loaded, loadError = pcall(
+                              capturedSaveManager.LoadAutoloadConfig,
+                              capturedSaveManager
+                          )
+                          if not okCall then
+                              warn('[DevKage AutoLoad] config load threw an error: ' .. tostring(loaded))
+                              return
+                          end
+                          if loaded ~= true then
+                              if loaded ~= false then
+                                  warn('[DevKage AutoLoad] config load returned no result')
+                              else
+                                  warn('[DevKage AutoLoad] ' .. tostring(loadError))
                               end
+                              return
+                          end
+
+                          -- Do not delay the normal config load for the add-on builder.
+                          -- Flush late Fake Position / Evasion / Aura / Rainbow / Wave /
+                          -- Nebula controls as they register, then stop promptly.
+                          local genv = getfenv()
+                          if type(getgenv) == 'function' then
+                              local okGlobal, globalEnv = pcall(getgenv)
+                              if okGlobal and type(globalEnv) == 'table' then
+                                  genv = globalEnv
+                              end
+                          end
+
+                          local pendingDeadline = os.clock() + 8
+                          local remaining = 0
+                          repeat
+                              if type(capturedSaveManager.ApplyPendingConfig) ~= 'function' then
+                                  break
+                              end
+                              local okPending, pendingCount = pcall(
+                                  capturedSaveManager.ApplyPendingConfig,
+                                  capturedSaveManager
+                              )
+                              if not okPending then
+                                  warn('[DevKage AutoLoad] pending settings restore failed: ' .. tostring(pendingCount))
+                                  break
+                              end
+                              remaining = tonumber(pendingCount) or 0
+                              if remaining <= 0 then
+                                  break
+                              end
+                              if genv.__UE_ADDON_READY then
+                                  task.wait(0.08)
+                              else
+                                  task.wait(0.05)
+                              end
+                          until os.clock() >= pendingDeadline
+
+                          if remaining > 0 then
+                              warn('[DevKage AutoLoad] ' .. tostring(remaining) .. ' late add-on settings were not registered in time')
                           end
                       end)
                   end
