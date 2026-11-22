@@ -1,4 +1,4 @@
--- __DEVKAGE_BUILD_20261121_AUTOLOAD_R3__
+-- __DEVKAGE_BUILD_20261122_AUTOLOAD_R6__
 -- Hello from devkage
 
 if not game:IsLoaded() then
@@ -487,10 +487,21 @@ local function ragebot_initialize(
     local voidSpamAttackOffset = Options.ragebot_void_spam_attack.Value
     local voidSpamLastTick = tick()
     local voidSpamFlip = false
+    -- Void protection for void spam: matches Kicia ragebot approach.
+    -- Setting FallenPartsDestroyHeight to NaN prevents the kill-plane from
+    -- triggering when the void spam sends the character far below the map.
+    local _voidSpamSavedFallenHeight = workspace.FallenPartsDestroyHeight
     local function ragebot_store_value20(neutralValue1)
         voidSpamValue = neutralValue1
         voidSpamFlip = false
         voidSpamLastTick = tick() + (voidSpamAttackOffset or 0.1)
+        pcall(function()
+            if neutralValue1 then
+                workspace.FallenPartsDestroyHeight = 0/0  -- NaN: disable kill plane
+            else
+                workspace.FallenPartsDestroyHeight = _voidSpamSavedFallenHeight
+            end
+        end)
     end
     Toggles.ragebot_void_spam:OnChanged(ragebot_store_value20)
     local function ragebot_store_value21(neutralValue1)
@@ -508,17 +519,19 @@ local function ragebot_initialize(
             voidSpamFlip = false
             return false
         end
+        -- Rage-mode void spam: character stays permanently in the void.
+        -- No attack window is exposed — attacks from others cannot connect,
+        -- and the local character cannot deal damage while voided.
+        -- This matches Kicia ragebot FallenPartsDestroyHeight = NaN + constant void cycling.
         local currentTick = tick()
         if currentTick < voidSpamLastTick then
-            return voidSpamFlip
+            -- Always report "in void" (flip = true means hiding)
+            return true
         end
-        voidSpamFlip = not voidSpamFlip
-        if voidSpamFlip then
-            voidSpamLastTick = currentTick + (voidSpamHideValue or 0.25)
-        else
-            voidSpamLastTick = currentTick + (voidSpamAttackOffset or 0.1)
-        end
-        return voidSpamFlip
+        -- Cycle: re-arm the timer, stay hidden the entire time
+        voidSpamLastTick = currentTick + (voidSpamHideValue or 0.25)
+        voidSpamFlip = true  -- permanently hidden
+        return true
     end
 
     local knifeLastTarget
@@ -18386,6 +18399,54 @@ local function directEntry(...)
                         return argument1
                     end
                     local httpService = localValue1(game:GetService('HttpService'))
+
+                    -- Resolve config controls from the live executor environment as well as
+                    -- the registries captured when SaveManager was first constructed.
+                    -- Add-on tabs (Fake Position, Rainbow UI, and UI Wave) register later,
+                    -- so the originally captured tables can be stale or incomplete.
+                    local function getConfigRegistryTables(kind)
+                        local registryName = (kind == 'Toggle' or kind == 'Toggles') and 'Toggles' or 'Options'
+                        local fallbackRegistry = registryName == 'Toggles' and capturedValue3 or capturedValue2
+                        local registries, seen = {}, {}
+                        local function addRegistry(candidate)
+                            if type(candidate) == 'table' and not seen[candidate] then
+                                seen[candidate] = true
+                                registries[#registries + 1] = candidate
+                            end
+                        end
+
+                        local activeEnv = getfenv()
+                        local globalEnv = activeEnv
+                        if type(getgenv) == 'function' then
+                            local ok, candidate = pcall(getgenv)
+                            if ok and type(candidate) == 'table' then
+                                globalEnv = candidate
+                            end
+                        end
+
+                        -- Prefer this script's current UI registry. getgenv() can retain
+                        -- tables from a previous execution, so it is a fallback, not the
+                        -- source of truth for controls just created by this run.
+                        if type(activeEnv) == 'table' then
+                            addRegistry(rawget(activeEnv, registryName))
+                        end
+                        if type(globalEnv) == 'table' then
+                            addRegistry(rawget(globalEnv, registryName))
+                        end
+                        addRegistry(fallbackRegistry)
+                        return registries
+                    end
+
+                    local function findConfigControl(kind, idx)
+                        for _, registry in ipairs(getConfigRegistryTables(kind)) do
+                            local control = registry[idx]
+                            if control ~= nil then
+                                return control
+                            end
+                        end
+                        return nil
+                    end
+
                     local localValue2, localValue3, localValue4 = isfolder, isfile, listfiles
                     do
                         capturedValue1.Folder = ''
@@ -18400,8 +18461,9 @@ local function directEntry(...)
                                     }
                                 end,
                                 Load = function(argument4, argument5)
-                                    if capturedValue3[argument4] then
-                                        capturedValue3[argument4]:SetValue(argument5.value)
+                                    local control = findConfigControl('Toggle', argument4)
+                                    if control then
+                                        control:SetValue(argument5.value)
                                     end
                                 end,
                             },
@@ -18414,8 +18476,9 @@ local function directEntry(...)
                                     }
                                 end,
                                 Load = function(argument8, argument9)
-                                    if capturedValue2[argument8] then
-                                        capturedValue2[argument8]:SetValue(argument9.value)
+                                    local control = findConfigControl('Options', argument8)
+                                    if control then
+                                        control:SetValue(argument9.value)
                                     end
                                 end,
                             },
@@ -18429,8 +18492,9 @@ local function directEntry(...)
                                     }
                                 end,
                                 Load = function(argument12, argument13)
-                                    if capturedValue2[argument12] then
-                                        capturedValue2[argument12]:SetValue(argument13.value)
+                                    local control = findConfigControl('Options', argument12)
+                                    if control then
+                                        control:SetValue(argument13.value)
                                     end
                                 end,
                             },
@@ -18444,8 +18508,9 @@ local function directEntry(...)
                                     }
                                 end,
                                 Load = function(argument16, argument17)
-                                    if capturedValue2[argument16] then
-                                        capturedValue2[argument16]:SetValueRGB(Color3.fromHex(argument17.value), argument17.transparency)
+                                    local control = findConfigControl('Options', argument16)
+                                    if control then
+                                        control:SetValueRGB(Color3.fromHex(argument17.value), argument17.transparency)
                                     end
                                 end,
                             },
@@ -18459,8 +18524,9 @@ local function directEntry(...)
                                     }
                                 end,
                                 Load = function(argument20, argument21)
-                                    if capturedValue2[argument20] then
-                                        capturedValue2[argument20]:SetValue({
+                                    local control = findConfigControl('Options', argument20)
+                                    if control then
+                                        control:SetValue({
                                             argument21.key,
                                             argument21.mode,
                                         })
@@ -18476,8 +18542,9 @@ local function directEntry(...)
                                     }
                                 end,
                                 Load = function(argument24, argument25)
-                                    if capturedValue2[argument24] and type(argument25.text) == 'string' then
-                                        capturedValue2[argument24]:SetValue(argument25.text)
+                                    local control = findConfigControl('Options', argument24)
+                                    if control and type(argument25.text) == 'string' then
+                                        control:SetValue(argument25.text)
                                     end
                                 end,
                             },
@@ -18517,26 +18584,33 @@ local function directEntry(...)
                             capturedValue1:CheckFolderTree()
                             local localValue7 = self.Folder .. '/settings/' .. argument28 .. '.json'
                             local localValue8 = {objects = {}}
-                            for loopKey2, loopValue2 in next, capturedValue3 do
-                                if self.Ignore[loopKey2] then
-                                    continue
+                            local seenToggleIndexes, seenOptionIndexes = {}, {}
+                            for _, toggleRegistry in ipairs(getConfigRegistryTables('Toggle')) do
+                                for loopKey2, loopValue2 in next, toggleRegistry do
+                                    if seenToggleIndexes[loopKey2] then continue end
+                                    seenToggleIndexes[loopKey2] = true
+                                    if self.Ignore[loopKey2] then continue end
+                                    local toggleParser = loopValue2 and self.Parser[loopValue2.Type]
+                                    if toggleParser and type(toggleParser.Save) == 'function' then
+                                        local okSave, savedObject = pcall(toggleParser.Save, loopKey2, loopValue2)
+                                        if okSave and savedObject then
+                                            table.insert(localValue8.objects, savedObject)
+                                        end
+                                    end
                                 end
-                                local toggleParser = loopValue2 and self.Parser[loopValue2.Type]
-                                if toggleParser and type(toggleParser.Save) == 'function' then
-                                    local okSave, savedObject = pcall(toggleParser.Save, loopKey2, loopValue2)
+                            end
+                            for _, optionRegistry in ipairs(getConfigRegistryTables('Options')) do
+                                for loopKey3, loopValue3 in next, optionRegistry do
+                                    if seenOptionIndexes[loopKey3] then continue end
+                                    seenOptionIndexes[loopKey3] = true
+                                    if not loopValue3 or not self.Parser[loopValue3.Type] then continue end
+                                    if self.Ignore[loopKey3] then continue end
+                                    local optionParser = self.Parser[loopValue3.Type]
+                                    local okSave, savedObject = pcall(optionParser.Save, loopKey3, loopValue3)
                                     if okSave and savedObject then
                                         table.insert(localValue8.objects, savedObject)
                                     end
                                 end
-                            end
-                            for loopKey3, loopValue3 in next, capturedValue2 do
-                                if not self.Parser[loopValue3.Type] then
-                                    continue
-                                end
-                                if self.Ignore[loopKey3] then
-                                    continue
-                                end
-                                table.insert(localValue8.objects, self.Parser[loopValue3.Type].Save(loopKey3, loopValue3))
                             end
                             local localValue9, localValue10 = pcall(httpService.JSONEncode, httpService, localValue8)
                             if not localValue9 then
@@ -18549,14 +18623,21 @@ local function directEntry(...)
                         end
                         capturedValue1.PendingConfig = {}
                         local function isAddonConfigIndex(idx)
+                            -- FIX R6: original check only caught 'DE_' and 'Nebula_' prefixes.
+                            -- fake_position_* and ragebot_underground* keys are also addon-only
+                            -- controls registered inside the task.spawn at ~line 19433, so they
+                            -- must go into PendingConfig instead of being fired immediately
+                            -- into nil during autoload. Adding those prefixes here routes them
+                            -- through the existing pending/retry path that already works.
                             return type(idx) == 'string' and (
-                                string.sub(idx, 1, 3) == 'DE_' or
-                                string.sub(idx, 1, 7) == 'Nebula_'
+                                string.sub(idx, 1, 3)  == 'DE_'             or
+                                string.sub(idx, 1, 7)  == 'Nebula_'         or
+                                string.sub(idx, 1, 14) == 'fake_position_'  or
+                                string.sub(idx, 1, 18) == 'ragebot_underground'
                             )
                         end
                         local function configControlExists(kind, idx)
-                            local registry = kind == 'Toggle' and capturedValue3 or capturedValue2
-                            return type(registry) == 'table' and registry[idx] ~= nil
+                            return findConfigControl(kind, idx) ~= nil
                         end
                         function capturedValue1:ApplyConfigObjects(objects)
                             local pending = {}
@@ -19502,22 +19583,59 @@ local function directEntry(...)
                     end)
                     onCleanup(function() pcall(runService.UnbindFromRenderStep, runService, shieldName) end)
 
+                    -- Do not make the entire addon depend on one optional control being
+                    -- registered first. During autoload, the Combat UI controls are added
+                    -- after this task starts; waiting specifically for god mode used to
+                    -- abort every addon control when that registration was delayed.
                     local deadline = os.clock() + 60
-                    while (not env.Toggles or not env.Options or not env.Toggles.ragebot_god_mode) and os.clock() < deadline do
-                        task.wait(0.25)
+                    while (type(env.Toggles) ~= 'table' or type(env.Options) ~= 'table') and os.clock() < deadline do
+                        task.wait(0.1)
                     end
                     local Toggles, Options = env.Toggles, env.Options
+                    if type(Toggles) ~= 'table' or type(Options) ~= 'table' then
+                        error('UI control registries did not initialize')
+                    end
 
                     ----------------------------------------------------------
-                    -- GOD MODE (void spam, nothing can hit you)
+                    -- OPTIONAL GOD MODE BINDING
+                    -- Starts independently so Fake Position can still register
+                    -- even if this optional control is created later or is absent.
                     ----------------------------------------------------------
-                    do
-                        local godToggle = Toggles.ragebot_god_mode
-                        local voidTime = Options.ragebot_god_void_time
-                        local showTime = Options.ragebot_god_show_time
-                        local VOID_Y = -50000
+                    local godModeAlive = true
+                    local godModeConnection
+                    onCleanup(function()
+                        godModeAlive = false
+                        if godModeConnection then
+                            pcall(godModeConnection.Disconnect, godModeConnection)
+                            godModeConnection = nil
+                        end
+                    end)
+                    task.spawn(function()
+                        local godDeadline = os.clock() + 60
+                        local godToggle
+                        repeat
+                            local toggleRegistry = env.Toggles
+                            godToggle = type(toggleRegistry) == 'table' and toggleRegistry.ragebot_god_mode or nil
+                            if godToggle or not godModeAlive then break end
+                            task.wait(0.1)
+                        until os.clock() >= godDeadline
+                        if not godModeAlive or not godToggle then return end
+
+                        local voidTime  = env.Options and env.Options.ragebot_god_void_time
+                        local showTime  = env.Options and env.Options.ragebot_god_show_time
+                        local voidDepth = env.Options and env.Options.ragebot_god_void_depth
                         local phase, phaseUntil = 'void', 0
-                        local conn
+                        -- Underground state
+                        local ugToggle  = env.Toggles and env.Toggles.ragebot_underground
+                        local ugDepth   = env.Options  and env.Options.ragebot_underground_depth
+                        local savedFallenHeight = workspace.FallenPartsDestroyHeight
+                        -- Void-protect: set FallenPartsDestroyHeight to NaN so the server never destroys
+                        -- the character when it goes below the kill plane (matches Kicia's approach).
+                        local function setVoidProtect(on)
+                            pcall(function()
+                                workspace.FallenPartsDestroyHeight = on and (0/0) or savedFallenHeight
+                            end)
+                        end
 
                         local function getParts()
                             local char = localPlayer.Character
@@ -19527,59 +19645,126 @@ local function directEntry(...)
                         end
 
                         local function step()
-                            -- God Mode and Nebula Counter both drive the same root part.
-                            -- Do not let two movement controllers fight over one character.
                             local nebulaToggle = genv.Toggles and genv.Toggles.Nebula_Enabled
                             if nebulaToggle and nebulaToggle.Value == true then return end
                             local hum, root = getParts()
                             if not hum then return end
                             local now = os.clock()
+                            -- Re-read optional controls each step (they may register after this closure)
+                            if not ugToggle  then ugToggle  = env.Toggles and env.Toggles.ragebot_underground end
+                            if not ugDepth   then ugDepth   = env.Options  and env.Options.ragebot_underground_depth end
+                            if not voidDepth then voidDepth = env.Options  and env.Options.ragebot_god_void_depth end
+
+                            -- Underground mode: sink player by chosen depth, void-protected
+                            if ugToggle and ugToggle.Value == true then
+                                local depth = tonumber(ugDepth and ugDepth.Value) or 10
+                                local pos = root.Position
+                                -- Clamp to stay well above FallenPartsDestroyHeight (use -depth relative to surface)
+                                local targetY = pos.Y - depth
+                                shieldBegin(root)
+                                root.CFrame = CFrame.new(pos.X, targetY, pos.Z)
+                                root.AssemblyLinearVelocity = Vector3.zero
+                                root.AssemblyAngularVelocity = Vector3.zero
+                                return -- underground overrides god mode cycling
+                            end
+
+                            -- God mode: rapid void cycling — no attack window, no one can hit you
                             if now >= phaseUntil then
                                 if phase == 'void' then
                                     phase = 'show'
-                                    phaseUntil = now + (showTime and showTime.Value or 0.02)
+                                    phaseUntil = now + (showTime and showTime.Value or 0.01)
                                 else
                                     phase = 'void'
-                                    phaseUntil = now + (voidTime and voidTime.Value or 0.25)
+                                    phaseUntil = now + (voidTime and voidTime.Value or 0.3)
                                 end
                             end
                             if phase == 'void' then
-                                shieldBegin(root) -- real position is restored before rendering
-                                local p = root.Position
-                                root.CFrame = CFrame.new(p.X, VOID_Y, p.Z)
+                                shieldBegin(root)
+                                local position = root.Position
+                                local voidY = -(tonumber(voidDepth and voidDepth.Value) or 50000)
+                                root.CFrame = CFrame.new(position.X, voidY, position.Z)
                                 root.AssemblyLinearVelocity = Vector3.zero
                                 root.AssemblyAngularVelocity = Vector3.zero
                             end
                         end
 
                         godToggle:OnChanged(function(on)
-                            if on and not conn then
+                            if not godModeAlive then return end
+                            if on and not godModeConnection then
                                 phase, phaseUntil = 'void', 0
-                                conn = runService.Heartbeat:Connect(function()
+                                -- Enable void protection so underground/god mode don't trigger kill plane
+                                setVoidProtect(true)
+                                godModeConnection = runService.Heartbeat:Connect(function()
+                                    if not godModeAlive then return end
                                     if Toggles.ragebot_enabled and Toggles.ragebot_enabled.Value
                                         and Toggles.ragebot_void_spam and Toggles.ragebot_void_spam.Value then
-                                        return -- ragebot void spam is driving the character
+                                        return
                                     end
                                     pcall(step)
                                 end)
-                            elseif not on and conn then
-                                conn:Disconnect()
-                                conn = nil
+                            elseif not on and godModeConnection then
+                                godModeConnection:Disconnect()
+                                godModeConnection = nil
+                                setVoidProtect(false)
                             end
                         end)
-                        onCleanup(function() if conn then conn:Disconnect() conn = nil end end)
-                        if godToggle.Value then godToggle:SetValue(false) godToggle:SetValue(true) end
-                    end
+                        -- Also watch underground toggle independently (no god mode required)
+                        task.spawn(function()
+                            local deadline2 = os.clock() + 60
+                            local ugT
+                            repeat
+                                ugT = env.Toggles and env.Toggles.ragebot_underground
+                                if ugT or not godModeAlive then break end
+                                task.wait(0.1)
+                            until os.clock() >= deadline2
+                            if not godModeAlive or not ugT then return end
+                            ugT:OnChanged(function(on)
+                                if not godModeAlive then return end
+                                if on then
+                                    setVoidProtect(true)
+                                    if not godModeConnection then
+                                        -- Run underground-only heartbeat when god mode is off
+                                        phase, phaseUntil = 'void', 0
+                                        godModeConnection = runService.Heartbeat:Connect(function()
+                                            if not godModeAlive then return end
+                                            local ugOn = ugT and ugT.Value == true
+                                            local godOn = godToggle and godToggle.Value == true
+                                            if not ugOn and not godOn then return end
+                                            pcall(step)
+                                        end)
+                                    end
+                                else
+                                    local godOn = godToggle and godToggle.Value == true
+                                    if not godOn then
+                                        setVoidProtect(false)
+                                        if godModeConnection then
+                                            godModeConnection:Disconnect()
+                                            godModeConnection = nil
+                                        end
+                                    end
+                                end
+                            end)
+                        end)
+                        if godToggle.Value then
+                            godToggle:SetValue(false)
+                            godToggle:SetValue(true)
+                        end
+                    end)
 
                     ----------------------------------------------------------
                     -- helpers
                     ----------------------------------------------------------
                     local function registry(kind)
-                        local v = rawget(genv, kind)
-                        if type(v) ~= 'table' then v = env[kind] end
+                        -- Use this execution's registries first; getgenv() may still hold
+                        -- controls from a previous run of the script.
+                        local v = env[kind]
+                        if type(v) ~= 'table' then v = rawget(genv, kind) end
                         return type(v) == 'table' and v or {}
                     end
                     local function fetchControl(kind, idx, returned)
+                        -- AddToggle/AddSlider return the control just created for this UI.
+                        -- Never replace it with a stale same-index control from getgenv().
+                        if type(returned) == 'table' then return returned end
                         local found = registry(kind)[idx]
                         if type(found) == 'table' then return found end
                         return returned
@@ -19655,6 +19840,469 @@ local function directEntry(...)
                             boxFrame.LayoutOrder = 0
                         end)
                     end
+
+                    ----------------------------------------------------------
+                    -- COMBAT TAB: Fake Position (below Targeting, left side)
+                    -- Uses the native library controls and shared camera shield.
+                    ----------------------------------------------------------
+                    pcall(function()
+                        local combatTab = deTabs.main
+                        if not combatTab then error('Combat tab unavailable') end
+
+                        local fakePositionBox = combatTab:AddLeftGroupbox('fake position')
+                        local fakePositionToggle = addToggle(fakePositionBox, 'fake_position_enabled', {
+                            Text = 'fake position',
+                            Default = false,
+                            Tooltip = 'Moves your replicated position toward the nearest player while the camera remains at your local position.',
+                        })
+                        -- These are native UI switches for the script's existing controls,
+                        -- not duplicate movement loops. This avoids two controllers fighting
+                        -- over the same HumanoidRootPart.
+                        local fakePositionVoidSpam = addToggle(fakePositionBox, 'fake_position_void_spam', {
+                            Text = 'void spam', Default = false,
+                            Tooltip = 'Links to the existing Ragebot Void Spam control.',
+                        })
+                        local fakePositionSettings = fakePositionBox:AddDependencyBox()
+                        local fakePositionRange = addSlider(fakePositionSettings, 'fake_position_range', {
+                            Text = 'lock range', Default = 65, Min = 5, Max = 250,
+                            Suffix = 'st', Rounding = 0, Compact = true,
+                        })
+                        local fakePositionStandoff = addSlider(fakePositionSettings, 'fake_position_standoff', {
+                            Text = 'standoff', Default = 2.6, Min = 0, Max = 15,
+                            Suffix = 'st', Rounding = 1, Compact = true,
+                        })
+                        local fakePositionHeight = addSlider(fakePositionSettings, 'fake_position_height', {
+                            Text = 'height', Default = 0, Min = -10, Max = 10,
+                            Suffix = 'st', Rounding = 1, Compact = true,
+                        })
+                        local fakePositionSmooth = addSlider(fakePositionSettings, 'fake_position_smooth', {
+                            Text = 'smooth', Default = 0.5, Min = 0.05, Max = 1,
+                            Rounding = 2, Increment = 0.05, Compact = true,
+                        })
+                        local fakePositionJitter = addToggle(fakePositionSettings, 'fake_position_void_jitter', {
+                            Text = 'void jitter', Default = false,
+                            Tooltip = 'Adds the position jitter from the supplied add-on while Fake Position is active.',
+                        })
+                        local fakePositionJitterSpeed = addSlider(fakePositionSettings, 'fake_position_jitter_speed', {
+                            Text = 'jitter speed', Default = 34, Min = 1, Max = 100,
+                            Suffix = 'hz', Rounding = 0, Compact = true,
+                        })
+                        local fakePositionJitterAmount = addSlider(fakePositionSettings, 'fake_position_jitter_amount', {
+                            Text = 'jitter distance', Default = 2.4, Min = 0, Max = 8,
+                            Suffix = 'st', Rounding = 1, Compact = true,
+                        })
+                        local fakePositionSpin = addToggle(fakePositionSettings, 'fake_position_jitter_spin', {
+                            Text = 'jitter spin', Default = true,
+                        })
+                        local fakePositionTracer = addToggle(fakePositionSettings, 'fake_position_tracer', {
+                            Text = 'target tracer', Default = true,
+                        })
+                        local fakePositionInfo = addToggle(fakePositionSettings, 'fake_position_target_info', {
+                            Text = 'target info', Default = true,
+                        })
+
+                        -- Evasion sub-section (inspired by Kicia ProjectileBreaker/Random evasion)
+                        local fakePositionEvasion = addToggle(fakePositionSettings, 'fake_position_evasion', {
+                            Text = 'evasion', Default = false,
+                            Tooltip = 'Applies server-side evasive repositioning while Fake Position is active. Mimics ragebot evasion behavior to break projectile tracking.',
+                        })
+                        local fakePositionEvasionSettings = fakePositionSettings:AddDependencyBox()
+                        local fakePositionEvasionMode = addDropdown(fakePositionEvasionSettings, 'fake_position_evasion_mode', {
+                            Text = 'evasion mode',
+                            Values = { 'random', 'projectile breaker', 'spin' },
+                            Default = 'projectile breaker',
+                            Tooltip = 'random: teleport to unpredictable positions. projectile breaker: oscillate depth to deflect incoming projectiles. spin: circular evasion arc.',
+                        })
+                        local fakePositionEvasionRadius = addSlider(fakePositionEvasionSettings, 'fake_position_evasion_radius', {
+                            Text = 'evasion radius', Default = 80, Min = 5, Max = 400,
+                            Suffix = 'st', Rounding = 0, Compact = true,
+                            Tooltip = 'Maximum distance from your true position for random/spin evasion.',
+                        })
+                        local fakePositionEvasionInterval = addSlider(fakePositionEvasionSettings, 'fake_position_evasion_interval', {
+                            Text = 'reposition rate', Default = 0.25, Min = 0.05, Max = 2,
+                            Suffix = 's', Rounding = 2, Compact = true,
+                            Tooltip = 'How often to reposition. Lower = faster / harder to track.',
+                        })
+                        local fakePositionEvasionDepthFwd = addSlider(fakePositionEvasionSettings, 'fake_position_evasion_depth_fwd', {
+                            Text = 'pb depth forward', Default = 3, Min = 0, Max = 10,
+                            Suffix = 'st', Rounding = 1, Compact = true,
+                            Tooltip = 'Projectile Breaker: forward oscillation depth.',
+                        })
+                        local fakePositionEvasionDepthUp = addSlider(fakePositionEvasionSettings, 'fake_position_evasion_depth_up', {
+                            Text = 'pb depth up', Default = 4, Min = 0, Max = 10,
+                            Suffix = 'st', Rounding = 1, Compact = true,
+                            Tooltip = 'Projectile Breaker: vertical oscillation depth.',
+                        })
+                        fakePositionEvasionSettings:SetupDependencies({ { fakePositionEvasion, true } })
+
+                        fakePositionSettings:SetupDependencies({ { fakePositionToggle, true } })
+
+                        local function bindExistingToggle(proxy, sourceName)
+                            local alive, touched, syncing = true, false, false
+                            proxy:OnChanged(function(value)
+                                if syncing then return end
+                                touched = true
+                                local source = registry('Toggles')[sourceName]
+                                if source and source.Value ~= value then
+                                    pcall(source.SetValue, source, value)
+                                end
+                            end)
+                            task.spawn(function()
+                                local deadline = os.clock() + 60
+                                local source
+                                repeat
+                                    source = registry('Toggles')[sourceName]
+                                    if source or not alive then break end
+                                    task.wait(0.1)
+                                until os.clock() >= deadline
+                                if not alive or not source then return end
+                                if touched then
+                                    if source.Value ~= proxy.Value then pcall(source.SetValue, source, proxy.Value) end
+                                else
+                                    syncing = true
+                                    if proxy.Value ~= source.Value then pcall(proxy.SetValue, proxy, source.Value) end
+                                    syncing = false
+                                end
+                                if type(source.OnChanged) == 'function' then
+                                    source:OnChanged(function(value)
+                                        if alive and not touched and proxy.Value ~= value then
+                                            syncing = true
+                                            pcall(proxy.SetValue, proxy, value)
+                                            syncing = false
+                                        end
+                                    end)
+                                end
+                            end)
+                            onCleanup(function() alive = false end)
+                        end
+                        bindExistingToggle(fakePositionVoidSpam, 'ragebot_void_spam')
+
+                        -- Insert immediately after the existing Targeting groupbox.
+                        local function placeGroupboxBelow(tab, groupbox, needle)
+                            pcall(function()
+                                local sides = tab:GetSides()
+                                local targetFrame, targetColumn
+                                for _, column in ipairs({ sides.Left, sides.Right }) do
+                                    if typeof(column) == 'Instance' then
+                                        for _, child in ipairs(column:GetChildren()) do
+                                            if child:IsA('GuiObject') then
+                                                for _, descendant in ipairs(child:GetDescendants()) do
+                                                    if (descendant:IsA('TextLabel') or descendant:IsA('TextButton'))
+                                                        and string.find(string.lower(descendant.Text or ''), needle, 1, true) then
+                                                        targetFrame, targetColumn = child, column
+                                                        break
+                                                    end
+                                                end
+                                            end
+                                            if targetFrame then break end
+                                        end
+                                    end
+                                    if targetFrame then break end
+                                end
+
+                                local boxFrame = groupbox.Container
+                                while boxFrame and boxFrame.Parent and boxFrame.Parent ~= sides.Left and boxFrame.Parent ~= sides.Right do
+                                    boxFrame = boxFrame.Parent
+                                end
+                                if not boxFrame then return end
+
+                                local column = targetColumn or sides.Left
+                                if boxFrame.Parent ~= column then boxFrame.Parent = column end
+                                local layout = column:FindFirstChildOfClass('UIListLayout')
+                                if layout then layout.SortOrder = Enum.SortOrder.LayoutOrder end
+
+                                local siblings = {}
+                                for index, child in ipairs(column:GetChildren()) do
+                                    if child:IsA('GuiObject') and child ~= boxFrame then
+                                        siblings[#siblings + 1] = {
+                                            frame = child,
+                                            order = child.LayoutOrder,
+                                            index = index,
+                                        }
+                                    end
+                                end
+                                table.sort(siblings, function(a, b)
+                                    if a.order ~= b.order then return a.order < b.order end
+                                    return a.index < b.index
+                                end)
+
+                                local order = 10
+                                local inserted = false
+                                for _, entry in ipairs(siblings) do
+                                    entry.frame.LayoutOrder = order
+                                    order += 10
+                                    if entry.frame == targetFrame then
+                                        boxFrame.LayoutOrder = order
+                                        order += 10
+                                        inserted = true
+                                    end
+                                end
+                                if not inserted then boxFrame.LayoutOrder = order end
+                            end)
+                        end
+                        placeGroupboxBelow(combatTab, fakePositionBox, 'targeting')
+
+                        local fakePositionConnection
+                        -- Evasion state (reset when fake position is toggled off)
+                        local _evasionLastReposition, _evasionOffsetCF, _evasionFlipFwd, _evasionFlipUp
+                        local activeHumanoid, savedAutoRotate
+                        local visuals = { a0 = nil, a1 = nil, beam = nil, gui = nil }
+
+                        local function accentColor()
+                            local color = library and library.AccentColor
+                            if typeof(color) == 'Color3' then return color end
+                            return Color3.fromRGB(242, 150, 238)
+                        end
+
+                        local function destroyVisuals()
+                            for _, key in ipairs({ 'beam', 'a0', 'a1', 'gui' }) do
+                                local object = visuals[key]
+                                if object then pcall(object.Destroy, object) end
+                                visuals[key] = nil
+                            end
+                        end
+
+                        local function restoreAutoRotate()
+                            if activeHumanoid and activeHumanoid.Parent and savedAutoRotate ~= nil then
+                                pcall(function() activeHumanoid.AutoRotate = savedAutoRotate end)
+                            end
+                            activeHumanoid, savedAutoRotate = nil, nil
+                        end
+
+                        local function getLocalParts()
+                            local character = localPlayer.Character
+                            if not character then return end
+                            local humanoid = character:FindFirstChildOfClass('Humanoid')
+                            local root = character:FindFirstChild('HumanoidRootPart')
+                            if humanoid and root and humanoid.Health > 0 then
+                                return humanoid, root
+                            end
+                        end
+
+                        local function nearestTarget(root)
+                            local bestRoot, bestDistance
+                            local maxDistance = math.max(1, tonumber(fakePositionRange.Value) or 65)
+                            for _, player in ipairs(players:GetPlayers()) do
+                                if player ~= localPlayer then
+                                    local character = player.Character
+                                    local humanoid = character and character:FindFirstChildOfClass('Humanoid')
+                                    local targetRoot = character and character:FindFirstChild('HumanoidRootPart')
+                                    if humanoid and targetRoot and humanoid.Health > 0 then
+                                        local distance = (targetRoot.Position - root.Position).Magnitude
+                                        if distance <= maxDistance and (not bestDistance or distance < bestDistance) then
+                                            bestRoot, bestDistance = targetRoot, distance
+                                        end
+                                    end
+                                end
+                            end
+                            return bestRoot, bestDistance
+                        end
+
+                        local function makeGoal(targetRoot, root)
+                            local targetPosition = targetRoot.Position
+                            local direction = root.Position - targetPosition
+                            direction = Vector3.new(direction.X, 0, direction.Z)
+                            if direction.Magnitude < 0.01 then direction = Vector3.new(0, 0, 1) end
+                            direction = direction.Unit
+
+                            local standoff = tonumber(fakePositionStandoff.Value) or 2.6
+                            local height = tonumber(fakePositionHeight.Value) or 0
+                            local point = targetPosition + direction * standoff + Vector3.new(0, height, 0)
+                            local lookAt = Vector3.new(targetPosition.X, point.Y, targetPosition.Z)
+                            if (lookAt - point).Magnitude < 0.05 then return CFrame.new(point) end
+                            return CFrame.lookAt(point, lookAt)
+                        end
+
+                        local function drawTargetVisuals(root, targetRoot, distance)
+                            local color = accentColor()
+                            if fakePositionTracer.Value then
+                                if not visuals.a0 then visuals.a0 = Instance.new('Attachment') end
+                                if not visuals.a1 then visuals.a1 = Instance.new('Attachment') end
+                                if not visuals.beam then
+                                    local beam = Instance.new('Beam')
+                                    beam.Name = 'DevKageFakePositionTracer'
+                                    beam.Segments = 1
+                                    beam.Width0 = 0.14
+                                    beam.Width1 = 0.14
+                                    beam.FaceCamera = true
+                                    beam.Transparency = NumberSequence.new(0.2)
+                                    visuals.beam = beam
+                                end
+                                visuals.a0.Parent = root
+                                visuals.a1.Parent = targetRoot
+                                visuals.beam.Attachment0 = visuals.a0
+                                visuals.beam.Attachment1 = visuals.a1
+                                visuals.beam.Color = ColorSequence.new(color)
+                                visuals.beam.Parent = root
+                            else
+                                for _, key in ipairs({ 'beam', 'a0', 'a1' }) do
+                                    local object = visuals[key]
+                                    if object then pcall(object.Destroy, object) end
+                                    visuals[key] = nil
+                                end
+                            end
+
+                            if fakePositionInfo.Value then
+                                if not visuals.gui then
+                                    local gui = Instance.new('BillboardGui')
+                                    gui.Name = 'DevKageFakePositionInfo'
+                                    gui.Size = UDim2.fromOffset(170, 34)
+                                    gui.StudsOffset = Vector3.new(0, 3.2, 0)
+                                    gui.AlwaysOnTop = true
+                                    local label = Instance.new('TextLabel')
+                                    label.Name = 'Txt'
+                                    label.Size = UDim2.fromScale(1, 1)
+                                    label.BackgroundTransparency = 1
+                                    label.Font = Enum.Font.Code
+                                    label.TextSize = 13
+                                    label.TextStrokeTransparency = 0.5
+                                    label.Parent = gui
+                                    visuals.gui = gui
+                                end
+                                visuals.gui.Adornee = targetRoot
+                                visuals.gui.Parent = targetRoot
+                                local label = visuals.gui:FindFirstChild('Txt')
+                                if label then
+                                    label.TextColor3 = color
+                                    label.Text = string.format('%s  [%d]', targetRoot.Parent and targetRoot.Parent.Name or 'target', math.floor((distance or 0) + 0.5))
+                                end
+                            elseif visuals.gui then
+                                pcall(visuals.gui.Destroy, visuals.gui)
+                                visuals.gui = nil
+                            end
+                        end
+
+                        local function anotherPositionControllerActive()
+                            local god = Toggles.ragebot_god_mode
+                            if god and god.Value == true then return true end
+                            local rage = Toggles.ragebot_enabled
+                            local voidSpam = Toggles.ragebot_void_spam
+                            if rage and rage.Value == true and voidSpam and voidSpam.Value == true then return true end
+                            local nebula = genv.Toggles and genv.Toggles.Nebula_Enabled
+                            return nebula and nebula.Value == true
+                        end
+
+                        local function stopFakePosition()
+                            if fakePositionConnection then
+                                fakePositionConnection:Disconnect()
+                                fakePositionConnection = nil
+                            end
+                            _evasionLastReposition, _evasionOffsetCF, _evasionFlipFwd, _evasionFlipUp = nil, nil, nil, nil
+                            restoreAutoRotate()
+                            destroyVisuals()
+                        end
+
+                        local function setFakePosition(enabled)
+                            if enabled then
+                                if fakePositionConnection then return end
+                                fakePositionConnection = runService.Heartbeat:Connect(function()
+                                    local okStep = pcall(function()
+                                        local humanoid, root = getLocalParts()
+                                        if not humanoid or not root then
+                                            destroyVisuals()
+                                            restoreAutoRotate()
+                                            return
+                                        end
+
+                                        if activeHumanoid ~= humanoid then
+                                            restoreAutoRotate()
+                                            activeHumanoid = humanoid
+                                            savedAutoRotate = humanoid.AutoRotate
+                                        end
+                                        humanoid.AutoRotate = false
+
+                                        if anotherPositionControllerActive() then
+                                            destroyVisuals()
+                                            return
+                                        end
+
+                                        local targetRoot, distance = nearestTarget(root)
+                                        if not targetRoot then
+                                            destroyVisuals()
+                                            return
+                                        end
+
+                                        local goal = makeGoal(targetRoot, root)
+                                        local final = goal
+                                        local jitterEnabled = fakePositionJitter.Value == true
+                                        if jitterEnabled then
+                                            local speed = tonumber(fakePositionJitterSpeed.Value) or 34
+                                            local amount = tonumber(fakePositionJitterAmount.Value) or 2.4
+                                            local t = os.clock() * speed
+                                            final = goal * CFrame.new(
+                                                math.sin(t) * amount,
+                                                math.cos(t * 1.7) * amount * 0.35,
+                                                0
+                                            )
+                                            if fakePositionSpin.Value then
+                                                final = final * CFrame.Angles(0, math.sin(t * 0.5) * 0.6, 0)
+                                            end
+                                        end
+
+                                        -- Evasion layer: applies on top of jitter/smooth positioning
+                                        if fakePositionEvasion.Value == true then
+                                            local now3 = os.clock()
+                                            local evasionInterval = tonumber(fakePositionEvasionInterval.Value) or 0.25
+                                            local evasionMode = fakePositionEvasionMode.Value or 'projectile breaker'
+                                            if not _evasionLastReposition then _evasionLastReposition = 0 end
+                                            if not _evasionOffsetCF then _evasionOffsetCF = CFrame.new() end
+                                            if now3 - _evasionLastReposition >= evasionInterval then
+                                                _evasionLastReposition = now3
+                                                local radius = tonumber(fakePositionEvasionRadius.Value) or 80
+                                                if evasionMode == 'random' then
+                                                    -- Kicia-style: random position within radius around goal
+                                                    local angle = math.random() * math.pi * 2
+                                                    local dist = math.random() * radius
+                                                    _evasionOffsetCF = CFrame.new(math.cos(angle) * dist, 0, math.sin(angle) * dist)
+                                                elseif evasionMode == 'projectile breaker' then
+                                                    -- Kicia ProjectileBreaker: oscillate forward + up depth to deflect projectiles
+                                                    local depthFwd = tonumber(fakePositionEvasionDepthFwd.Value) or 3
+                                                    local depthUp  = tonumber(fakePositionEvasionDepthUp.Value)  or 4
+                                                    local t2 = now3
+                                                    local fwdOffset  = (math.sin(t2 * math.pi * 2 * 5) * 0.5 + 0.5) * depthFwd
+                                                    local upOffset   = (math.sin(t2 * math.pi * 2 * 5 + 1.57) * 0.5 + 0.5) * depthUp
+                                                    -- alternate sign each reposition for unpredictability
+                                                    local signFwd = (_evasionFlipFwd and 1 or -1); _evasionFlipFwd = not _evasionFlipFwd
+                                                    local signUp  = (_evasionFlipUp  and 1 or -1); _evasionFlipUp  = not _evasionFlipUp
+                                                    _evasionOffsetCF = CFrame.new(0, upOffset * signUp, fwdOffset * signFwd)
+                                                elseif evasionMode == 'spin' then
+                                                    -- Circular arc evasion
+                                                    local angle2 = (now3 / evasionInterval) * math.pi * 2
+                                                    local dist2 = radius * 0.5
+                                                    _evasionOffsetCF = CFrame.new(math.cos(angle2) * dist2, 0, math.sin(angle2) * dist2)
+                                                end
+                                            end
+                                            -- Apply the evasion offset: shift the server-replicated final CFrame
+                                            final = CFrame.new(final.Position + _evasionOffsetCF.Position) * CFrame.Angles(final:ToEulerAnglesXYZ())
+                                        end
+
+                                        -- Shared shield restores the local render position while
+                                        -- retaining the one-frame network position update.
+                                        shieldBegin(root)
+                                        root.AssemblyLinearVelocity = Vector3.zero
+                                        root.AssemblyAngularVelocity = Vector3.zero
+                                        local alpha = jitterEnabled and 1 or math.clamp(tonumber(fakePositionSmooth.Value) or 0.5, 0.01, 1)
+                                        root.CFrame = root.CFrame:Lerp(final, alpha)
+                                        drawTargetVisuals(root, targetRoot, distance)
+                                    end)
+                                    if not okStep then destroyVisuals() end
+                                end)
+                            else
+                                stopFakePosition()
+                            end
+                        end
+
+                        fakePositionToggle:OnChanged(setFakePosition)
+                        onCleanup(function()
+                            stopFakePosition()
+                            pcall(function()
+                                if fakePositionBox and fakePositionBox.Container then
+                                    fakePositionBox.Container:Destroy()
+                                end
+                            end)
+                        end)
+                        if fakePositionToggle.Value == true then setFakePosition(true) end
+                    end)
 
                     ----------------------------------------------------------
                     -- CHARACTER TAB: Nebula Counter (right side, above aura)
@@ -20427,7 +21075,7 @@ local function directEntry(...)
                 end
                 genv.__UE_ADDON_ERROR = not okAll and tostring(errAll) or nil
                 genv.__UE_ADDON_READY = true
-                if not okAll then warn('[Unnamed Enhancements addon] ' .. tostring(errAll)) end
+                if not okAll then warn('[DevKage addon] ' .. tostring(errAll)) end
             end)
         end
         do
@@ -21988,11 +22636,18 @@ local function directEntry(...)
         sharedSlot1_94.current(sharedSlot1_95.current, sharedSlot1_96.current, sharedSlot1_97.current)
         do
             local godTab = sharedSlot1_93.current
-            godTab:AddToggle("ragebot_god_mode", { Text = "god mode", Default = false, Tooltip = "Uses a brief position-desync attempt. Server-authoritative damage protection is not guaranteed." })
+            godTab:AddToggle("ragebot_god_mode", { Text = "god mode", Default = false, Tooltip = "Keeps you in the void almost permanently. While active you cannot be hit and no one can attack you. Uses rapid void-cycling with minimal visible window." })
             local godDep = godTab:AddDependencyBox()
-            godDep:AddSlider("ragebot_god_void_time", { Text = "void time", Default = 0.25, Min = 0.05, Max = 1, Suffix = "s", Rounding = 2, Compact = true, Tooltip = "how long you stay in the void each cycle" })
-            godDep:AddSlider("ragebot_god_show_time", { Text = "visible time", Default = 0.02, Min = 0, Max = 0.2, Suffix = "s", Rounding = 2, Compact = true, Tooltip = "how long you pop back in; 0 = almost never visible" })
+            godDep:AddSlider("ragebot_god_void_time",  { Text = "void time",    Default = 0.3,  Min = 0.05, Max = 1,   Suffix = "s", Rounding = 2, Compact = true, Tooltip = "How long you remain in the void per cycle. Higher = safer." })
+            godDep:AddSlider("ragebot_god_show_time",  { Text = "visible time", Default = 0.01, Min = 0,    Max = 0.1, Suffix = "s", Rounding = 2, Compact = true, Tooltip = "Pop-back window; set to 0 to be almost permanently invisible to the server." })
+            godDep:AddSlider("ragebot_god_void_depth", { Text = "void depth",   Default = 50000, Min = 10000, Max = 100000, Rounding = 0, Compact = true, Tooltip = "How far below the map you are sent each cycle. Higher values are harder to detect." })
             godDep:SetupDependencies({ { Toggles.ragebot_god_mode, true } })
+
+            -- Underground feature
+            godTab:AddToggle("ragebot_underground", { Text = "underground", Default = false, Tooltip = "Sinks you underground to the chosen depth. Void-protected so you will not fall out of bounds or die." })
+            local ugDep = godTab:AddDependencyBox()
+            ugDep:AddSlider("ragebot_underground_depth", { Text = "depth", Default = 10, Min = 1, Max = 200, Suffix = "st", Rounding = 0, Compact = true, Tooltip = "How many studs underground you sink. Void protection keeps you from hitting FallenPartsDestroyHeight." })
+            ugDep:SetupDependencies({ { Toggles.ragebot_underground, true } })
         end
         sharedSlot1_94.current = sharedSlot1_92.current
         sharedSlot1_93.current = sharedSlot1_92.current.AddTab
@@ -56596,8 +57251,33 @@ if chunk then pcall(chunk) end
                   getfenv().SCRIPT_FINISHED = true
                   localSlot1_100 = (localSlot1_77[("save_manager")])
                   sharedSlot1_101.current = localSlot1_100
-                  localSlot1_100 = localSlot1_100.LoadAutoloadConfig
-                  localSlot1_100(sharedSlot1_101.current)
+                  do
+                      -- FIX R6: addon controls are registered after SaveManager is created.
+                      -- Resolve live registries on every save/load (and prefer the current
+                      -- script's controls over stale getgenv() entries), then wait for the
+                      -- addon builder to finish before autoloading and flushing pending keys.
+                      local capturedSaveManager = sharedSlot1_101.current
+                      task.spawn(function()
+                          local genv = (type(getgenv) == "function" and getgenv()) or getfenv()
+                          local waited = 0
+                          while not genv.__UE_ADDON_READY and waited < 30 do
+                              task.wait(0.05)
+                              waited = waited + 0.05
+                          end
+                          -- Give the control registry one scheduler turn to settle before
+                          -- deserializing. The SaveManager now resolves live registries, and
+                          -- this bounded flush handles controls registered at the READY edge.
+                          task.wait(0.05)
+                          pcall(capturedSaveManager.LoadAutoloadConfig, capturedSaveManager)
+                          if type(capturedSaveManager.ApplyPendingConfig) == "function" then
+                              for _ = 1, 30 do
+                                  task.wait(0.1)
+                                  local remaining = capturedSaveManager:ApplyPendingConfig()
+                                  if not remaining or remaining == 0 then break end
+                              end
+                          end
+                      end)
+                  end
                   localSlot1_100 = localSlot1_36
                   sharedSlot1_101.current = "impending doom"
                   localSlot1_100(sharedSlot1_101.current)
